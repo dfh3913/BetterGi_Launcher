@@ -4,6 +4,23 @@
     "burst": "wz",
     "normal": "dm"
   },
+  "pre_launch_check": {
+    "enabled": true,
+    "bgi_process": "BetterGI.exe",
+    "game_process": "Yuanshen.exe",
+    "kill_bgi_if_game_absent": true,
+    "wait_after_kill_seconds": 3
+  },
+  "monitor": {
+    "enabled": true,
+    "poll_interval_seconds": 2,
+    "startup_timeout_seconds": 120,
+    "max_duration_hours": 12,
+    "capture_stdout": true,
+    "follow_log_file": false,
+    "follow_log_file_fallback": true,
+    "stdout_grace_seconds": 20
+  },
   "special_rules": {
     "burst_first_day_as_normal": true,
     "update_day_kill_after_dm": true,
