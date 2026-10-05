@@ -1,0 +1,12 @@
+# Python 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyInstaller 构建产物
+build/
+dist/
+
+# 程序运行时自动生成的日志
+log/
+*.log

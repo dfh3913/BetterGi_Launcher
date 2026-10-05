@@ -1,0 +1,13 @@
+{
+  "bettergi_path": "D:\\Tools\\Mhy tools\\BetterGI\\BetterGI.exe",
+  "config_name_mapping": {
+    "burst": "wz",
+    "normal": "dm"
+  },
+  "special_rules": {
+    "burst_first_day_as_normal": true,
+    "update_day_kill_after_dm": true,
+    "kill_delay_seconds": 60,
+    "kill_processes": ["Yuanshen.exe", "BetterGI.exe"]
+  }
+}
