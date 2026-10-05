@@ -1,6 +1,6 @@
 # BetterGI 智能启动器
 
-> **本项目由 DeepSeek v4.1f 编写的 Vibe 项目**
+> **本项目由 Kimi K3 编写的 Vibe 项目**
 >
 > 一个根据日期自动匹配启动参数、智能切换 BetterGI 一条龙配置、并持续监听 BetterGI 运行日志的 Windows 自动化工具。
 
@@ -58,7 +58,7 @@
                                  └─ 直至 BetterGI 进程关闭（或更新日延迟终止到期）→ 收尾退出
 ```
 
-本项目由 **DeepSeek v4.1f** 以 Vibe 编程方式生成，代码简洁、易于维护，适合无人值守的自动化场景。
+本项目由 **Kimi K3** 以 Vibe 编程方式生成，代码简洁、易于维护，适合无人值守的自动化场景。
 
 ---
 
@@ -81,13 +81,13 @@
 
 ## 系统要求
 
-| 项目 | 要求 |
-|------|------|
-| 操作系统 | Windows 10 / Windows 11 |
-| 运行权限 | **管理员权限**（必需，用于 taskkill 终止游戏 / BetterGI 进程） |
-| Python 版本（开发） | Python 3.8 或更高 |
-| BetterGI 版本 | 0.45.3 及以上（支持 `startOneDragon <配置名称>`） |
-| 依赖库 | 标准库（`csv`, `ctypes`, `io`, `json`, `logging`, `os`, `subprocess`, `sys`, `threading`, `time`, `datetime`, `pathlib`, `tkinter`） |
+| 项目            | 要求                                                                                                                              |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| 操作系统          | Windows 10 / Windows 11                                                                                                         |
+| 运行权限          | **管理员权限**（必需，用于 taskkill 终止游戏 / BetterGI 进程）                                                                                    |
+| Python 版本（开发） | Python 3.8 或更高                                                                                                                  |
+| BetterGI 版本   | 0.45.3 及以上（支持 `startOneDragon <配置名称>`）                                                                                          |
+| 依赖库           | 标准库（`csv`, `ctypes`, `io`, `json`, `logging`, `os`, `subprocess`, `sys`, `threading`, `time`, `datetime`, `pathlib`, `tkinter`） |
 
 > **注意**：`tkinter` 用于首次运行时的文件选择对话框，Windows 官方 Python 安装包默认包含。若使用精简版 Python，请确保安装 `tkinter`。
 
@@ -119,9 +119,11 @@ BgiLauncher/
 ### 1. 获取程序
 
 **方式一：直接下载打包好的 exe**
+
 从发布页面下载 `BetterGI_Launcher.exe`，放置于任意目录（建议单独建文件夹，例如 `D:\Tools\BetterGI_Launcher\`）。
 
 **方式二：从源码运行**
+
 确保已安装 Python 3.8+，然后以管理员身份打开终端并执行：
 
 ```bash
@@ -129,6 +131,7 @@ python BgiLauncher.py
 ```
 
 **方式三：自行打包**
+
 参考 [打包指南](#打包指南)。
 
 ### 2. 首次运行
@@ -136,11 +139,9 @@ python BgiLauncher.py
 1. **右键点击** `BetterGI_Launcher.exe`，选择 **“以管理员身份运行”**。
 2. 程序启动后，若未找到 `config.json`，会自动创建默认配置，并弹出文件选择对话框。
 3. 在对话框中定位到你的 `BetterGI.exe`，例如：
-
    ```
    D:\Tools\Mhy tools\BetterGI\BetterGI.exe
    ```
-
 4. 选择完成后，程序保存配置并立即执行一次启动流程。
 5. 程序会在同目录下创建 `log` 文件夹，并写入本次运行日志与 BetterGI 合并日志。
 
@@ -211,28 +212,28 @@ python BgiLauncher.py
 
 ### 字段说明
 
-| 字段路径 | 类型 | 默认值 | 说明 |
-|----------|------|--------|------|
-| `bettergi_path` | string | `""` | `BetterGI.exe` 的完整路径。首次运行时会弹出文件选择对话框，也可手动编辑。 |
-| `config_name_mapping.burst` | string | `"wz"` | 紊乱爆发期使用的 BetterGI 一条龙配置名称。 |
-| `config_name_mapping.normal` | string | `"dm"` | 非爆发期使用的配置名称。 |
-| `pre_launch_check.enabled` | bool | `true` | 是否启用启动前进程检查。 |
-| `pre_launch_check.bgi_process` | string | `"BetterGI.exe"` | BetterGI 的进程映像名称。 |
-| `pre_launch_check.game_process` | string | `"Yuanshen.exe"` | 原神游戏的进程映像名称。 |
-| `pre_launch_check.kill_bgi_if_game_absent` | bool | `true` | 游戏未运行而 BetterGI 残留时，是否先 taskkill 掉 BetterGI。 |
-| `pre_launch_check.wait_after_kill_seconds` | number | `3` | taskkill 之后等待多少秒再启动，确保文件句柄释放。 |
-| `monitor.enabled` | bool | `true` | 是否启用持续监听。设为 `false` 时启动后立即退出（退化为 v0.1.0 行为）。 |
-| `monitor.poll_interval_seconds` | number | `2` | 进程状态检查与日志抓取的轮询间隔（秒）。 |
-| `monitor.startup_timeout_seconds` | number | `120` | 启动后多少秒内仍未检测到 BetterGI 进程则放弃监听。 |
-| `monitor.max_duration_hours` | number | `12` | 单次监听的最大时长保护，`0` 表示不限制。 |
-| `monitor.capture_stdout` | bool | `true` | 是否采集 BetterGI 子进程的终端输出（**主日志来源**）。 |
-| `monitor.follow_log_file` | bool | `false` | 是否始终跟随 BetterGI 日志文件（次来源，默认关闭以避免与终端输出重复）。 |
-| `monitor.follow_log_file_fallback` | bool | `true` | 终端迟迟没有输出时，是否自动启用日志文件跟随兜底。 |
-| `monitor.stdout_grace_seconds` | number | `20` | 判定“终端没有输出”的宽限时间（秒）。 |
-| `special_rules.burst_first_day_as_normal` | bool | `true` | 爆发期第一天是否视为非爆发期。`true` 表示第一天仍用 `dm`。 |
-| `special_rules.update_day_kill_after_dm` | bool | `true` | 版本更新日是否执行终止进程操作。 |
-| `special_rules.kill_delay_seconds` | number | `60` | 启动 `dm` 后等待多少秒再终止进程。 |
-| `special_rules.kill_processes` | array | `["Yuanshen.exe", "BetterGI.exe"]` | 需要终止的进程名称列表。 |
+| 字段路径                                       | 类型     | 默认值                                | 说明                                           |
+| ------------------------------------------ | ------ | ---------------------------------- | -------------------------------------------- |
+| `bettergi_path`                            | string | `""`                               | `BetterGI.exe` 的完整路径。首次运行时会弹出文件选择对话框，也可手动编辑。 |
+| `config_name_mapping.burst`                | string | `"wz"`                             | 紊乱爆发期使用的 BetterGI 一条龙配置名称。                   |
+| `config_name_mapping.normal`               | string | `"dm"`                             | 非爆发期使用的配置名称。                                 |
+| `pre_launch_check.enabled`                 | bool   | `true`                             | 是否启用启动前进程检查。                                 |
+| `pre_launch_check.bgi_process`             | string | `"BetterGI.exe"`                   | BetterGI 的进程映像名称。                            |
+| `pre_launch_check.game_process`            | string | `"Yuanshen.exe"`                   | 原神游戏的进程映像名称。                                 |
+| `pre_launch_check.kill_bgi_if_game_absent` | bool   | `true`                             | 游戏未运行而 BetterGI 残留时，是否先 taskkill 掉 BetterGI。 |
+| `pre_launch_check.wait_after_kill_seconds` | number | `3`                                | taskkill 之后等待多少秒再启动，确保文件句柄释放。                |
+| `monitor.enabled`                          | bool   | `true`                             | 是否启用持续监听。设为 `false` 时启动后立即退出（退化为 v0.1.0 行为）。 |
+| `monitor.poll_interval_seconds`            | number | `2`                                | 进程状态检查与日志抓取的轮询间隔（秒）。                         |
+| `monitor.startup_timeout_seconds`          | number | `120`                              | 启动后多少秒内仍未检测到 BetterGI 进程则放弃监听。               |
+| `monitor.max_duration_hours`               | number | `12`                               | 单次监听的最大时长保护，`0` 表示不限制。                       |
+| `monitor.capture_stdout`                   | bool   | `true`                             | 是否采集 BetterGI 子进程的终端输出（**主日志来源**）。           |
+| `monitor.follow_log_file`                  | bool   | `false`                            | 是否始终跟随 BetterGI 日志文件（次来源，默认关闭以避免与终端输出重复）。    |
+| `monitor.follow_log_file_fallback`         | bool   | `true`                             | 终端迟迟没有输出时，是否自动启用日志文件跟随兜底。                    |
+| `monitor.stdout_grace_seconds`             | number | `20`                               | 判定“终端没有输出”的宽限时间（秒）。                          |
+| `special_rules.burst_first_day_as_normal`  | bool   | `true`                             | 爆发期第一天是否视为非爆发期。`true` 表示第一天仍用 `dm`。          |
+| `special_rules.update_day_kill_after_dm`   | bool   | `true`                             | 版本更新日是否执行终止进程操作。                             |
+| `special_rules.kill_delay_seconds`         | number | `60`                               | 启动 `dm` 后等待多少秒再终止进程。                         |
+| `special_rules.kill_processes`             | array  | `["Yuanshen.exe", "BetterGI.exe"]` | 需要终止的进程名称列表。                                 |
 
 ### 适配其他配置名称
 
@@ -278,11 +279,12 @@ python BgiLauncher.py
 
 无人值守场景下，某天的 BetterGI 任务可能因异常而未正常收尾，第二天 7:20 再次运行时就会遇到“**游戏没开，但 BetterGI 还挂在那里**”的状态，直接启动新流程往往达不到预期效果。因此启动器在调用 BetterGI **之前**会先检查两个进程：
 
-| 检查结果 | 处理动作 |
-|----------|----------|
-| `Yuanshen.exe` 未运行，`BetterGI.exe` 未运行 | 无需清理，直接进入启动流程 |
-| `Yuanshen.exe` **正在运行**，`BetterGI.exe` 正在运行 | **保留**现有 BetterGI，不执行 taskkill（避免打断正在进行中的任务） |
-| `Yuanshen.exe` 未运行，`BetterGI.exe` **正在运行** | **先 `taskkill /F /IM BetterGI.exe`**，等待 `wait_after_kill_seconds` 秒确认退出后，再执行原有启动流程 |
+| 检查结果                                        | 处理动作                                                                               |
+| ------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `Yuanshen.exe` 未运行，`BetterGI.exe` 未运行       | 无需清理，直接进入启动流程                                                                      |
+| `Yuanshen.exe` **正在运行**，`BetterGI.exe` 正在运行 | **保留**现有 BetterGI，不执行 taskkill（避免打断正在进行中的任务）                                       |
+| `Yuanshen.exe` 未运行，`BetterGI.exe` **正在运行**  | **先 `taskkill /F /IM BetterGI.exe`**，等待 `wait_after_kill_seconds` 秒确认退出后，再执行原有启动流程 |
+
 
 检测通过 `tasklist /FI "IMAGENAME eq xxx.exe" /FO CSV /NH` 实现，解析时只认同以引号开头的数据行，因此不受系统语言影响（不会把“信息: 没有运行的任务匹配指定标准”误判为“存在进程”）。
 
@@ -301,14 +303,16 @@ python BgiLauncher.py
 启动 BetterGI 之后，启动器**不会立即退出**，而是持续运行：
 
 1. **采集终端输出（主来源）**
+
    通过命令行 `BetterGI.exe startOneDragon <配置名>` 启动的 BetterGI 会把运行日志直接打印到终端。启动器用管道接管子进程的 `stdout/stderr`，在后台线程中逐行读取，实时写入合并日志文件。
    > 附带修掉了一个隐患：原实现虽然设置了 `stdout=PIPE`，却从未读取，管道缓冲区写满后子进程会被阻塞。现在输出由专门的读取线程持续消费。
-
 2. **跟随日志文件（兜底来源）**
-   若某种情况下终端一直没有输出（例如 BetterGI 把任务交接给了已在运行的实例），启动器会在 `stdout_grace_seconds` 秒后自动启用日志文件跟随：
-   `BetterGI.exe` 同目录下的 `log/better-genshin-impactYYYYMMDD.log`。
-   跟随策略为**增量读取**：启动前先记录该文件的字节基线，只搬运本次启动之后新增的内容，不会把当天早些时候的旧会话日志重复写进来；文件被截断时自动回到开头，跨零点出现新日志文件时自动切换。
 
+   若某种情况下终端一直没有输出（例如 BetterGI 把任务交接给了已在运行的实例），启动器会在 `stdout_grace_seconds` 秒后自动启用日志文件跟随：
+
+   `BetterGI.exe` 同目录下的 `log/better-genshin-impactYYYYMMDD.log`。
+
+   跟随策略为**增量读取**：启动前先记录该文件的字节基线，只搬运本次启动之后新增的内容，不会把当天早些时候的旧会话日志重复写进来；文件被截断时自动回到开头，跨零点出现新日志文件时自动切换。
 3. **结束条件**
    - BetterGI 进程被关闭（正常收尾）；
    - 或更新日特殊规则到期并执行了 taskkill；
@@ -358,11 +362,11 @@ python BgiLauncher.py
 
 程序支持以下命令行参数：
 
-| 参数 | 说明 |
-|------|------|
-| （无） | 正常启动流程，根据日期自动选择配置并启动 BetterGI，随后持续监听日志直至其退出。 |
-| `testbgi` | 测试模式：验证是否能够唤起带有 UAC 权限的 BetterGI。 |
-| `testtk` | 测试模式：验证 taskkill 功能是否正常。 |
+| 参数         | 说明                                           |
+| ---------- | -------------------------------------------- |
+| （无）        | 正常启动流程，根据日期自动选择配置并启动 BetterGI，随后持续监听日志直至其退出。 |
+| `testbgi`  | 测试模式：验证是否能够唤起带有 UAC 权限的 BetterGI。            |
+| `testtk`   | 测试模式：验证 taskkill 功能是否正常。                     |
 | `testproc` | 测试模式：输出当前进程状态、BetterGI 日志目录、日志基线大小与合并日志目标路径。 |
 
 ### 测试 BetterGI 唤起
@@ -406,14 +410,13 @@ BetterGI_Launcher.exe testproc
 - 日志根目录：程序所在目录下的 `log` 文件夹，按日期分目录：`log/YYYY-MM-DD/`。
 - 每次运行最多生成三个日志文件：
 
-| 文件 | 内容 |
-|------|------|
-| `HH-MM-SS.log` | 启动器常规日志（DEBUG 及以上） |
-| `error-HH-MM-SS.log` | 启动器错误日志（仅 ERROR 及以上） |
+| 文件                            | 内容                           |
+| ----------------------------- | ---------------------------- |
+| `HH-MM-SS.log`                | 启动器常规日志（DEBUG 及以上）           |
+| `error-HH-MM-SS.log`          | 启动器错误日志（仅 ERROR 及以上）         |
 | `bettergi-merge-HH-MM-SS.log` | BetterGI 运行日志合并文件（v0.1.1 新增） |
 
 - 合并日志示例（`####` 开头的行为启动器添加的时间戳标记，其余行均为 BetterGI 原始输出，未经改写）：
-
   ```
   # BetterGI 运行日志合并文件
   # 生成时间: 2026-10-05 22:50:31
@@ -426,7 +429,6 @@ BetterGI_Launcher.exe testproc
   启用一条龙配置：wz
   #### [2026-10-05 23:41:07] 监听结束：BetterGI.exe 进程已关闭；合并日志行数 1024
   ```
-
 - 日志格式：`时间 [级别] 消息`。
 - 控制台同时输出 INFO 及以上级别的日志，方便调试。
 - 所有异常均会记录到错误日志，便于无人值守时事后排查。
@@ -443,7 +445,7 @@ BetterGI_Launcher.exe testproc
 pip install pyinstaller
 ```
 
-2. 使用仓库自带的 spec 文件打包（推荐，图标与参数已固化）：
+1. 使用仓库自带的 spec 文件打包（推荐，图标与参数已固化）：
 
 ```bash
 pyinstaller BetterGI_Launcher.spec
@@ -455,16 +457,16 @@ pyinstaller BetterGI_Launcher.spec
 pyinstaller --onefile --windowed --icon="BlackScreen_240x240_32bit.ico" --name "BetterGI_Launcher" BgiLauncher.py
 ```
 
-3. 打包完成后，可执行文件位于 `dist/BetterGI_Launcher.exe`。
+1. 打包完成后，可执行文件位于 `dist/BetterGI_Launcher.exe`。
 
 ### 参数说明
 
-| 参数 | 说明 |
-|------|------|
-| `--onefile` | 打包为单个 exe 文件，便于分发。 |
+| 参数           | 说明                                                             |
+| ------------ | -------------------------------------------------------------- |
+| `--onefile`  | 打包为单个 exe 文件，便于分发。                                             |
 | `--windowed` | 不显示控制台窗口（GUI 模式）。v0.1.1 起程序常驻监听，无控制台更适合无人值守；需要观察实时输出时可按源码方式运行。 |
-| `--icon` | 指定图标文件路径，必须为 `.ico` 格式。 |
-| `--name` | 指定输出的 exe 名称。 |
+| `--icon`     | 指定图标文件路径，必须为 `.ico` 格式。                                        |
+| `--name`     | 指定输出的 exe 名称。                                                  |
 
 ### 图标要求
 
@@ -488,36 +490,43 @@ dist/
 ### Q1：程序启动后弹窗提示“权限不足”并退出？
 
 **原因**：未以管理员身份运行。
+
 **解决**：右键 exe → “以管理员身份运行”。若通过任务计划程序，请勾选“使用最高权限运行”。
 
 ### Q2：首次运行没有弹出文件选择对话框？
 
 **原因**：可能已存在 `config.json`，或 `tkinter` 不可用。
+
 **解决**：删除 `config.json` 后重新运行；确保 Python 安装包含 `tkinter`。也可手动编辑 `config.json` 填写 `bettergi_path`。
 
 ### Q3：BetterGI 启动失败，日志显示“路径无效”？
 
 **原因**：`bettergi_path` 配置错误或文件不存在。
+
 **解决**：检查路径是否正确，注意反斜杠转义（JSON 中需使用 `\\`）。建议使用绝对路径。
 
 ### Q4：配置名称 `wz` / `dm` 不存在怎么办？
 
 **原因**：BetterGI 中未创建对应名称的一条龙配置。
+
 **解决**：在 BetterGI 中创建名为 `wz` 和 `dm` 的配置，或修改 `config.json` 中的 `config_name_mapping` 为实际配置名。
 
 ### Q5：更新日终止进程没有生效？
 
 **原因**：`update_day_kill_after_dm` 为 `false`，或当天不是版本更新日。
+
 **解决**：检查配置；确认日期计算是否正确（基准日期 2026-08-12，周期 42 天）。
 
 ### Q6：日志文件在哪里？
 
 **位置**：程序同目录下的 `log/YYYY-MM-DD/` 文件夹。
+
 **排查**：优先查看 `error-*.log`，其中记录了所有错误信息；BetterGI 自身的运行过程看 `bettergi-merge-*.log`。
 
 ### Q7：如何修改爆发期第一天视为非爆发期的行为？
 
 **修改**：将 `config.json` 中 `special_rules.burst_first_day_as_normal` 设为 `false`。
+
 **效果**：爆发期第一天（第 8 天）将直接使用 `wz` 配置。
 
 ### Q8：支持其他版本的日期计算吗？
@@ -527,16 +536,19 @@ dist/
 ### Q9：为什么程序启动后一直不退出、任务管理器里一直有它？
 
 **原因**：v0.1.1 起启动器会常驻，持续监听 BetterGI 日志，直到 BetterGI 进程关闭才自行退出，这是刻意设计。
+
 **解决**：若想要“启动完就退出”，设置 `"monitor": { "enabled": false }`。
 
 ### Q10：合并日志是空的，或只有启动器标记？
 
 **原因**：BetterGI 的终端输出未被采集到（例如进程被交接给了已运行的实例），且文件兜底尚未触发或未开启。
+
 **解决**：先执行 `BgiLauncher.exe testproc` 确认进程名与日志目录识别正确；必要时把 `monitor.follow_log_file` 设为 `true`（始终跟随日志文件），或调小 `stdout_grace_seconds` 让兜底更快生效。
 
 ### Q11：日志里出现了重复的 BetterGI 内容？
 
 **原因**：同时开启了终端输出采集与日志文件跟随（`capture_stdout` 与 `follow_log_file` 均为 `true`）——两者记录的是同一批日志。
+
 **解决**：保持 `follow_log_file = false`（默认），依赖兜底机制即可。
 
 ### Q12：想临时禁用启动前的进程清理逻辑？
@@ -549,6 +561,7 @@ dist/
 
 ### v0.1.2
 
+- 模型标记：本版本由 **Kimi K3** 编写与维护。
 - 说明：功能与 v0.1.1 一致。v0.1.1 期间工作区曾回滚至 v0.1.0 代码，本版本以 v0.1.1 代码为基础重新整理并正式发布。
 - 启动 BetterGI 前进程检查：若 `Yuanshen.exe` 未运行而 `BetterGI.exe` 正在运行，先 `taskkill` 掉 BetterGI，再执行原有启动流程。
 - 启动后脚本持续运行，监听并合并 BetterGI 日志（终端输出为主、日志文件跟随兜底），直至 BetterGI 进程被关闭。
@@ -602,7 +615,7 @@ dist/
 
 ## 附录：最初提示词
 
-以下为用户最初给出的完整需求提示词，v0.1.0 即根据此需求由 DeepSeek v4.1f 编写。
+以下为用户最初给出的完整需求提示词，v0.1.0 即根据此需求编写。
 
 ```text
 写一个python，用于在不同的日期，匹配不同的启动参数，启动我的Bettergi
@@ -649,16 +662,6 @@ BetterGI.exe --startOneDragon <配置名称>
            error-19-40-00.log
 ```
 
-### v0.1.1 追加需求
-
-```text
-1、启动bettergi前先检查bettergi.exe 的运行状态 若yuanshen.exe不在运行 bettergi.exe在运行 就先taskkill掉bettergi 然后再执行之前的启动流程
-2、脚本持续运行，监听并一并bettergi日志，直至bettergi进程被关闭
-3、修改readme.md 然后提交到git 版本号0.1.1
-```
-
-> 补充说明：命令行带启动参数启动的 BetterGI 会把日志输出到终端，因此监听以子进程终端输出为主要来源，日志文件跟随为兜底。
-
 ### v0.1.2 追加需求
 
 ```text
@@ -670,23 +673,12 @@ BetterGI.exe --startOneDragon <配置名称>
 补充信息：由终端附带启动参数拉起的bettergi 会输出日志至控制台
 ```
 
-补充指示：
-
-```text
-1、若使用0.1.1版本代码，请检查可用性与是否存在语法错误
-2、更新 readme.md
-3、将本对话最初的提示词添加到附录中
-4、把代码挂到github与gitee
-```
-
----
-
 ## 免责声明
 
 1. 本工具仅用于辅助启动 BetterGI，不修改游戏文件，不提供任何游戏内作弊功能。
 2. 使用本工具产生的一切后果由使用者自行承担。
 3. 请遵守 BetterGI 的许可协议以及原神官方的用户协议。
-4. 本项目由 DeepSeek v4.1f 生成，作者不对其稳定性、安全性作任何明示或暗示的担保。
+4. 本项目由 Kimi K3 生成，作者不对其稳定性、安全性作任何明示或暗示的担保。
 
 ---
 
