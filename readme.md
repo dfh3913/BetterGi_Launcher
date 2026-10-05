@@ -1,6 +1,6 @@
 # BetterGI 智能启动器
 
-> **本项目由 Kimi K3 编写的 Vibe 项目**
+> **本项目是由 DeepSeek v4.1f 编写、Kimi K3 修改的 Vibe 项目**
 >
 > 一个根据日期自动匹配启动参数、智能切换 BetterGI 一条龙配置、并持续监听 BetterGI 运行日志的 Windows 自动化工具。
 
@@ -58,7 +58,7 @@
                                  └─ 直至 BetterGI 进程关闭（或更新日延迟终止到期）→ 收尾退出
 ```
 
-本项目由 **Kimi K3** 以 Vibe 编程方式生成，代码简洁、易于维护，适合无人值守的自动化场景。
+本项目由 **DeepSeek v4.1f** 编写、**Kimi K3** 修改，以 Vibe 编程方式生成，代码简洁、易于维护，适合无人值守的自动化场景。
 
 ---
 
@@ -284,6 +284,7 @@ python BgiLauncher.py
 | `Yuanshen.exe` 未运行，`BetterGI.exe` 未运行       | 无需清理，直接进入启动流程                                                                      |
 | `Yuanshen.exe` **正在运行**，`BetterGI.exe` 正在运行 | **保留**现有 BetterGI，不执行 taskkill（避免打断正在进行中的任务）                                       |
 | `Yuanshen.exe` 未运行，`BetterGI.exe` **正在运行**  | **先 `taskkill /F /IM BetterGI.exe`**，等待 `wait_after_kill_seconds` 秒确认退出后，再执行原有启动流程 |
+
 
 
 检测通过 `tasklist /FI "IMAGENAME eq xxx.exe" /FO CSV /NH` 实现，解析时只认同以引号开头的数据行，因此不受系统语言影响（不会把“信息: 没有运行的任务匹配指定标准”误判为“存在进程”）。
@@ -561,7 +562,7 @@ dist/
 
 ### v0.1.2
 
-- 模型标记：本版本由 **Kimi K3** 编写与维护。
+- 模型标记：原作由 DeepSeek v4.1f 编写，本版本由 **Kimi K3** 修改。
 - 说明：功能与 v0.1.1 一致。v0.1.1 期间工作区曾回滚至 v0.1.0 代码，本版本以 v0.1.1 代码为基础重新整理并正式发布。
 - 启动 BetterGI 前进程检查：若 `Yuanshen.exe` 未运行而 `BetterGI.exe` 正在运行，先 `taskkill` 掉 BetterGI，再执行原有启动流程。
 - 启动后脚本持续运行，监听并合并 BetterGI 日志（终端输出为主、日志文件跟随兜底），直至 BetterGI 进程被关闭。
@@ -615,7 +616,7 @@ dist/
 
 ## 附录：最初提示词
 
-以下为用户最初给出的完整需求提示词，v0.1.0 即根据此需求编写。
+以下为用户最初给出的完整需求提示词，v0.1.0 即根据此需求由 DeepSeek v4.1f 编写。
 
 ```text
 写一个python，用于在不同的日期，匹配不同的启动参数，启动我的Bettergi
@@ -678,7 +679,7 @@ BetterGI.exe --startOneDragon <配置名称>
 1. 本工具仅用于辅助启动 BetterGI，不修改游戏文件，不提供任何游戏内作弊功能。
 2. 使用本工具产生的一切后果由使用者自行承担。
 3. 请遵守 BetterGI 的许可协议以及原神官方的用户协议。
-4. 本项目由 Kimi K3 生成，作者不对其稳定性、安全性作任何明示或暗示的担保。
+4. 本项目由 DeepSeek v4.1f 编写、Kimi K3 修改，作者不对其稳定性、安全性作任何明示或暗示的担保。
 
 ---
 
