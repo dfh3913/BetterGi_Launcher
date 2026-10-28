@@ -86,15 +86,91 @@ CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 # ============================================================
 CONSOLE_STREAM = None
 
+GENERIC_WRITE = 0x40000000
+FILE_SHARE_WRITE = 0x00000002
+OPEN_EXISTING = 3
+INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+
+class ConsoleStream:
+    """
+    基于 WriteConsoleW 的控制台输出流。
+
+    直接 open("CONOUT$") 是“按字节”写控制台，需要与控制台代码页（GBK / UTF-8）
+    严格匹配；在 Windows Terminal、ConPTY、重定向等场景下极易出现中文乱码。
+    WriteConsoleW 走 Unicode 接口，由系统自行转换，不受代码页影响。
+    """
+
+    def __init__(self, handle):
+        self._handle = handle
+
+    def write(self, text):
+        if not text:
+            return 0
+        try:
+            written = wintypes.DWORD(0)
+            ctypes.windll.kernel32.WriteConsoleW(
+                self._handle, text, len(text), ctypes.byref(written), None
+            )
+            return int(written.value)
+        except Exception:
+            return len(text)
+
+    def flush(self):
+        return None
+
+    def isatty(self):
+        return True
+
+
+def open_console_stream():
+    """通过 CreateFileW("CONOUT$") + WriteConsoleW 打开当前控制台"""
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateFileW.restype = ctypes.c_void_p
+    kernel32.CreateFileW.argtypes = [
+        ctypes.c_wchar_p, wintypes.DWORD, wintypes.DWORD,
+        ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+    ]
+    kernel32.WriteConsoleW.argtypes = [
+        ctypes.c_void_p, ctypes.c_wchar_p, wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p,
+    ]
+    handle = kernel32.CreateFileW(
+        "CONOUT$", GENERIC_WRITE, FILE_SHARE_WRITE, None, OPEN_EXISTING, 0, None
+    )
+    if not handle or handle == INVALID_HANDLE_VALUE:
+        return None
+    return ConsoleStream(handle)
+
+
+def stream_is_console(stream) -> bool:
+    """判断给定流是否直接连着控制台（而不是管道 / 文件重定向）"""
+    if os.name != "nt":
+        return False
+    try:
+        import msvcrt
+        fd = stream.fileno()
+        handle = msvcrt.get_osfhandle(fd)
+        if handle == -1:
+            return False
+        kernel32 = ctypes.windll.kernel32
+        kernel32.GetConsoleMode.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD)]
+        kernel32.GetConsoleMode.restype = wintypes.BOOL
+        mode = wintypes.DWORD(0)
+        return bool(kernel32.GetConsoleMode(ctypes.c_void_p(handle), ctypes.byref(mode)))
+    except Exception:
+        return False
+
 
 def setup_console_stream():
     """
     获取可用于终端回显的输出流。
 
-    - 以脚本或控制台程序运行时，sys.stdout 可直接使用；
-    - 打包为窗口程序（console=False）时，sys.stdout 为 None，此时尝试
-      AttachConsole(ATTACH_PARENT_PROCESS) 附着到启动它的那个控制台，
-      再打开 CONOUT$ 写入，从而让“命令行启动”也能看到 BetterGI 日志。
+    - 控制台直接输出（cmd / Windows Terminal）：走 WriteConsoleW，Unicode 输出，
+      不受控制台代码页影响；
+    - 管道 / 重定向（IDE、日志收集、Git Bash 等）：统一切到 UTF-8，避免 GBK 乱码；
+    - 打包为窗口程序（console=False）且 sys.stdout 为空：AttachConsole 附着到
+      启动它的那个控制台后再输出。
     """
     global CONSOLE_STREAM
 
@@ -103,24 +179,41 @@ def setup_console_stream():
         try:
             out.write("")
             out.flush()
-            CONSOLE_STREAM = out
-            return out
+        except Exception:
+            out = None
+
+    # 情况 1：stdout 是管道 / 文件 —— 统一按 UTF-8 输出
+    if out is not None and not stream_is_console(out):
+        try:
+            out.reconfigure(encoding="utf-8", errors="replace")
         except Exception:
             pass
+        CONSOLE_STREAM = out
+        return out
 
     if os.name != "nt":
-        return None
+        CONSOLE_STREAM = out
+        return out
 
+    # 情况 2/3：控制台直连，或窗口程序没有 stdout —— 用 WriteConsoleW 输出
     try:
         kernel32 = ctypes.windll.kernel32
-        if not kernel32.AttachConsole(-1):   # ATTACH_PARENT_PROCESS
-            return None                       # 没有父控制台（例如双击启动）
-        cp = kernel32.GetConsoleOutputCP()
-        encoding = {65001: "utf-8", 936: "gbk", 54936: "gbk"}.get(cp, f"cp{cp}")
-        try:
-            stream = open("CONOUT$", "w", encoding=encoding, errors="replace", buffering=1)
-        except LookupError:
-            stream = open("CONOUT$", "w", encoding="utf-8", errors="replace", buffering=1)
+        # 窗口程序启动时没有控制台，需要附着到启动它的那个控制台；
+        # 已经是控制台程序时 AttachConsole 会失败（已有控制台），忽略即可。
+        kernel32.AttachConsole(-1)   # ATTACH_PARENT_PROCESS
+
+        stream = open_console_stream() or out
+        if stream is None:
+            # 兜底：按控制台代码页写字节
+            cp = kernel32.GetConsoleOutputCP()
+            encoding = {65001: "utf-8", 936: "gbk", 54936: "gbk"}.get(cp, f"cp{cp}")
+            try:
+                stream = open("CONOUT$", "w", encoding=encoding, errors="replace", buffering=1)
+            except LookupError:
+                stream = open("CONOUT$", "w", encoding="utf-8", errors="replace", buffering=1)
+            except OSError:
+                return None   # 没有任何控制台（双击启动）
+
         CONSOLE_STREAM = stream
         if sys.stdout is None:
             sys.stdout = stream
@@ -128,8 +221,8 @@ def setup_console_stream():
             sys.stderr = stream
         return stream
     except Exception:
-        CONSOLE_STREAM = None
-        return None
+        CONSOLE_STREAM = out
+        return out
 
 
 def console_write(text: str):
