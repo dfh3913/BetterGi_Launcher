@@ -2,19 +2,28 @@
 # -*- coding: utf-8 -*-
 """
 BetterGI 智能启动器
-根据日期自动匹配启动参数，支持紊乱爆发期与版本更新特殊处理。
+根据实际启动时刻自动匹配启动参数，支持紊乱爆发期与版本更新特殊处理。
 
-v0.1.2（在 v0.1.1 基础上重新发布，功能一致；原作为 DeepSeek v4.1f，本版由 Kimi K3 修改）：
+v0.1.3（新增）：
+  1. 终端回显：由命令行启动本程序时，BetterGI 的运行日志会一并输出到当前终端
+     （打包为窗口程序时通过 AttachConsole 附着到父控制台；无控制台时仅写日志文件）。
+  2. 焦点守护：BetterGI 日志出现“不是原神 …… 暂停”时，自动把原神窗口切到前台；
+     运行期按 F12 可取消 / 恢复该功能（不写入配置文件，仅本次运行生效）。
+  3. 爆发期判定改为按“启动游戏的时间”精确到分钟：
+     紊乱爆发期 = 版本更新后第 8 天 10:00 ~ 第 18 天 03:59（第 17 天 03:59 结束），
+     修正旧版把结束日提前一天的问题；同时按官方维护窗口（06:00 停服、约 11:00 开服）提示。
+
+v0.1.2：
   1. 启动 BetterGI 前检查进程状态：若 Yuanshen.exe 未运行而 BetterGI.exe 正在运行，
      先 taskkill 掉 BetterGI.exe，再执行原有启动流程。
-  2. 启动后脚本持续运行，实时采集 BetterGI 的终端输出（命令行启动时 BGI 会把日志打到终端），
-     并合并写入日志目录中的合并日志文件，直至 BetterGI 进程关闭。
+  2. 启动后脚本持续运行，实时采集 BetterGI 的终端输出，并合并写入日志目录中的合并日志文件。
 
 用法:
   直接双击/命令行运行 exe 本体即可（需管理员权限）
   BgiLauncher.py testbgi    测试 BetterGI 唤起
   BgiLauncher.py testtk     测试 taskkill 功能
   BgiLauncher.py testproc   测试进程检测与日志路径解析
+  BgiLauncher.py testtime   测试版本 / 紊乱爆发期时间判定
 """
 
 import csv
@@ -23,18 +32,20 @@ import io
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import threading
 import time
-from datetime import datetime, date, timedelta
+from ctypes import wintypes
+from datetime import datetime, date, time as dtime, timedelta
 from pathlib import Path
 
 # ============================================================
 # 常量定义
 # ============================================================
 APP_NAME = "BetterGI 智能启动器"
-VERSION = "0.1.2"
+VERSION = "0.1.3"
 BASE_DIR = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
 CONFIG_FILE = BASE_DIR / "config.json"
 LOG_DIR = BASE_DIR / "log"
@@ -49,21 +60,91 @@ BASE_DATE = date(2026, 8, 12)
 # 版本周期（天）
 VERSION_CYCLE = 42
 
-# 紊乱爆发期起始偏移（版本更新后第 N 天，从 0 开始计数）
-BURST_START_DAY = 7   # 第 8 天 = 索引 7
+# ---- 紊乱爆发期（幽境危战常驻战斗活动）----
+# 官方公告口径：挑战开启后 10 天内为紊乱爆发期。
+# 挑战开启时间 = 版本更新后第 8 天 10:00；爆发期最后一天为第 17 天，03:59 结束（04:00 为每日重置）。
+# 实例（7.1 版本 / 2026-09-23 更新）：09-30 10:00 ~ 10-10 03:59
+BURST_START_DAY = 7          # 版本更新后第 8 天（0 基索引）
+BURST_START_HOUR = 10        # 开启时刻 10:00
+BURST_DURATION_DAYS = 10     # 持续 10 天
+BURST_END_DAY = BURST_START_DAY + BURST_DURATION_DAYS   # 第 18 天 04:00 之前（0 基索引 17）
+BURST_END_HOUR = 4           # 每日 04:00 重置，即最后一天 03:59 结束
 
-# 紊乱爆发期持续时间（天）
-BURST_DURATION = 10
+# ---- 版本更新维护窗口 ----
+MAINTENANCE_START_HOUR = 6   # 官方公告：06:00 开始停服维护
+SERVER_OPEN_HOUR = 11        # 官方公告：预计 5 小时，约 11:00 开服
 
-# 紊乱爆发期结束时间
-BURST_END_HOUR = 3
-BURST_END_MINUTE = 59
-
-# 版本更新当天维护结束时间
-MAINTENANCE_END_HOUR = 10
+# 焦点守护使用的 F1 ~ F12 虚拟键码
+VK_CODES = {f"F{i}": 0x6F + i for i in range(1, 13)}
 
 # subprocess 静默窗口标志（Windows）
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+# ============================================================
+# 终端输出（v0.1.3）
+# ============================================================
+CONSOLE_STREAM = None
+
+
+def setup_console_stream():
+    """
+    获取可用于终端回显的输出流。
+
+    - 以脚本或控制台程序运行时，sys.stdout 可直接使用；
+    - 打包为窗口程序（console=False）时，sys.stdout 为 None，此时尝试
+      AttachConsole(ATTACH_PARENT_PROCESS) 附着到启动它的那个控制台，
+      再打开 CONOUT$ 写入，从而让“命令行启动”也能看到 BetterGI 日志。
+    """
+    global CONSOLE_STREAM
+
+    out = sys.stdout
+    if out is not None:
+        try:
+            out.write("")
+            out.flush()
+            CONSOLE_STREAM = out
+            return out
+        except Exception:
+            pass
+
+    if os.name != "nt":
+        return None
+
+    try:
+        kernel32 = ctypes.windll.kernel32
+        if not kernel32.AttachConsole(-1):   # ATTACH_PARENT_PROCESS
+            return None                       # 没有父控制台（例如双击启动）
+        cp = kernel32.GetConsoleOutputCP()
+        encoding = {65001: "utf-8", 936: "gbk", 54936: "gbk"}.get(cp, f"cp{cp}")
+        try:
+            stream = open("CONOUT$", "w", encoding=encoding, errors="replace", buffering=1)
+        except LookupError:
+            stream = open("CONOUT$", "w", encoding="utf-8", errors="replace", buffering=1)
+        CONSOLE_STREAM = stream
+        if sys.stdout is None:
+            sys.stdout = stream
+        if sys.stderr is None:
+            sys.stderr = stream
+        return stream
+    except Exception:
+        CONSOLE_STREAM = None
+        return None
+
+
+def console_write(text: str):
+    """把一行文本回显到终端（无控制台时静默忽略）"""
+    stream = CONSOLE_STREAM
+    if stream is None:
+        return
+    try:
+        stream.write(text if text.endswith("\n") else text + "\n")
+        stream.flush()
+    except (OSError, ValueError, AttributeError):
+        pass
+
+
+CONSOLE_STREAM = setup_console_stream()
 
 
 # ============================================================
@@ -105,11 +186,12 @@ def setup_logger():
     ))
     logger.addHandler(eh)
 
-    # 控制台输出
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.INFO)
-    ch.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
-    logger.addHandler(ch)
+    # 控制台输出（v0.1.3：窗口程序附着父控制台后就可用）
+    if CONSOLE_STREAM is not None:
+        ch = logging.StreamHandler(CONSOLE_STREAM)
+        ch.setLevel(logging.INFO)
+        ch.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
+        logger.addHandler(ch)
 
     return logger
 
@@ -165,6 +247,15 @@ DEFAULT_CONFIG = {
         "follow_log_file": False,
         "follow_log_file_fallback": True,
         "stdout_grace_seconds": 20
+    },
+    "focus_game": {
+        "enabled": True,
+        "trigger_keywords": ["不是原神", "暂停"],
+        "delay_seconds": 3,
+        "cooldown_seconds": 30,
+        "retry_times": 6,
+        "retry_interval_seconds": 5,
+        "cancel_key": "F12"
     },
     "special_rules": {
         "burst_first_day_as_normal": True,
@@ -246,24 +337,18 @@ def select_bgi_path_interactive():
 def get_version_info(target_date: date):
     """
     根据目标日期计算版本号和版本内天数。
-    返回: (major, minor, days_since_start)
+    返回: (major, minor, days_since_start)  0 表示版本更新当天
     """
     delta = (target_date - BASE_DATE).days
-    if delta < 0:
-        # 早于基准日期，向前推算
-        version_offset = delta // VERSION_CYCLE
-        if delta % VERSION_CYCLE != 0:
-            version_offset -= 1
-        day_in_version = delta - version_offset * VERSION_CYCLE
-        major = BASE_VERSION[0]
-        minor = BASE_VERSION[1] + version_offset
-    else:
-        version_offset = delta // VERSION_CYCLE
-        day_in_version = delta % VERSION_CYCLE
-        major = BASE_VERSION[0]
-        minor = BASE_VERSION[1] + version_offset
+    version_offset, day_in_version = divmod(delta, VERSION_CYCLE)
 
-    # 处理 minor 溢出（每 10 个小版本进位）
+    major = BASE_VERSION[0]
+    minor = BASE_VERSION[1] + version_offset
+
+    # 处理 minor 溢出（每 10 个小版本进位 / 借位）
+    while minor < 0:
+        major -= 1
+        minor += 10
     while minor >= 10:
         major += 1
         minor -= 10
@@ -277,52 +362,91 @@ def get_version_start_date(major, minor):
     return BASE_DATE + timedelta(days=offset * VERSION_CYCLE)
 
 
-def is_burst_period(target_date: date, config: dict):
+def get_burst_window(major, minor):
     """
-    判断目标日期是否处于紊乱爆发期。
+    获取指定版本的紊乱爆发期区间。
+    返回: (开始 datetime, 结束 datetime) —— 结束时刻为开区间，即最后一天 03:59 结束。
+    """
+    start_date = get_version_start_date(major, minor)
+    burst_start = datetime.combine(
+        start_date + timedelta(days=BURST_START_DAY), dtime(BURST_START_HOUR, 0)
+    )
+    burst_end = datetime.combine(
+        start_date + timedelta(days=BURST_END_DAY), dtime(BURST_END_HOUR, 0)
+    )
+    return burst_start, burst_end
+
+
+def is_burst_period(now_dt: datetime, config: dict = None):
+    """
+    以“实际启动游戏的时刻”判断是否处于紊乱爆发期（精确到分钟）。
+
     返回: (是否爆发期, 版本信息字符串, 说明)
     """
-    major, minor, day_in = get_version_info(target_date)
+    major, minor, day_in = get_version_info(now_dt.date())
     version_str = f"{major}.{minor}"
+    burst_start, burst_end = get_burst_window(major, minor)
+    last_minute = burst_end - timedelta(minutes=1)
 
-    special = config.get("special_rules", {})
-    first_day_as_normal = special.get("burst_first_day_as_normal", True)
+    if now_dt < burst_start:
+        if day_in == 0:
+            return False, version_str, (
+                f"版本更新日（版本内第 {day_in + 1} 天），"
+                f"紊乱爆发期尚未开始（{burst_start:%m-%d %H:%M} 开启），使用常规配置"
+            )
+        return False, version_str, (
+            f"非爆发期（版本内第 {day_in + 1} 天），"
+            f"紊乱爆发期将于 {burst_start:%m-%d %H:%M} 开始，使用常规配置"
+        )
 
-    burst_start = BURST_START_DAY
-    burst_end = BURST_START_DAY + BURST_DURATION - 1
+    if now_dt < burst_end:
+        return True, version_str, (
+            f"紊乱爆发期（版本内第 {day_in + 1} 天，至 {last_minute:%m-%d %H:%M} 结束），"
+            f"使用爆发期配置"
+        )
 
-    # 版本更新当天（day_in == 0）固定为非爆发期
-    if day_in == 0:
-        return False, version_str, f"版本更新当天，使用常规配置"
-
-    # 爆发期第一天视为非爆发期（可配置）
-    if first_day_as_normal and day_in == burst_start:
-        return False, version_str, f"紊乱爆发期第一天（视为非爆发期），使用常规配置"
-
-    if burst_start <= day_in <= burst_end:
-        # 检查结束时间（爆发期最后一天 03:59 结束）
-        if day_in == burst_end:
-            now = datetime.now()
-            if now.hour > BURST_END_HOUR or (
-                now.hour == BURST_END_HOUR and now.minute > BURST_END_MINUTE
-            ):
-                return False, version_str, f"紊乱爆发期已结束（03:59后），使用常规配置"
-
-        return True, version_str, f"紊乱爆发期（第{day_in + 1}天），使用爆发期配置"
-
-    return False, version_str, f"非爆发期（第{day_in + 1}天），使用常规配置"
+    return False, version_str, (
+        f"非爆发期（版本内第 {day_in + 1} 天），"
+        f"紊乱爆发期已于 {last_minute:%m-%d %H:%M} 结束，使用常规配置"
+    )
 
 
 def is_update_day(target_date: date):
     """判断是否为版本更新日"""
-    major, minor, day_in = get_version_info(target_date)
+    _major, _minor, day_in = get_version_info(target_date)
     return day_in == 0
 
 
-def is_maintenance_time():
-    """判断当前是否在维护时间（10:00 之前）"""
-    now = datetime.now()
-    return now.hour < MAINTENANCE_END_HOUR
+def is_maintenance_time(now_dt: datetime = None):
+    """判断当前是否在版本更新日的停服维护窗口内（06:00 ~ 11:00）"""
+    now_dt = now_dt or datetime.now()
+    return MAINTENANCE_START_HOUR <= now_dt.hour < SERVER_OPEN_HOUR
+
+
+def log_version_context(now_dt: datetime, config: dict):
+    """输出一次完整的版本 / 爆发期上下文，便于事后核对判定依据"""
+    major, minor, day_in = get_version_info(now_dt.date())
+    version_start = get_version_start_date(major, minor)
+    burst_start, burst_end = get_burst_window(major, minor)
+
+    logger.info(f"时间基准: {now_dt:%Y-%m-%d %H:%M:%S}（读取系统时间，精确到分钟）")
+    logger.info(f"当前版本: {major}.{minor}（版本内第 {day_in + 1} 天 / 共 {VERSION_CYCLE} 天）")
+    logger.info(
+        f"版本更新: {version_start:%Y-%m-%d} "
+        f"{MAINTENANCE_START_HOUR:02d}:00 停服维护，预计 {SERVER_OPEN_HOUR:02d}:00 开服"
+    )
+    logger.info(
+        f"紊乱爆发期: {burst_start:%Y-%m-%d %H:%M} ~ "
+        f"{(burst_end - timedelta(minutes=1)):%Y-%m-%d %H:%M}"
+    )
+
+    if config is not None and not config.get("special_rules", {}).get(
+        "burst_first_day_as_normal", True
+    ):
+        logger.warning(
+            "special_rules.burst_first_day_as_normal = false 已不再生效："
+            "爆发期严格以真实时间 10:00 为起点，10:00 之前始终使用常规配置"
+        )
 
 
 # ============================================================
@@ -447,6 +571,317 @@ def pre_launch_process_check(config: dict):
 
 
 # ============================================================
+# 窗口前台切换（v0.1.3）
+# ============================================================
+def _enum_top_level_windows():
+    """枚举所有顶层窗口句柄"""
+    user32 = ctypes.windll.user32
+    hwnds = []
+    WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+
+    def _callback(hwnd, _lparam):
+        hwnds.append(hwnd)
+        return True
+
+    user32.EnumWindows(WNDENUMPROC(_callback), 0)
+    return hwnds
+
+
+def find_game_window(game_process: str = "Yuanshen.exe"):
+    """
+    查找原神主窗口句柄：按进程 PID 匹配顶层可见窗口，取面积最大的那个。
+    兼容国服 YuanShen.exe 与国际服 GenshinImpact.exe。
+    """
+    pids = set()
+    for name in {game_process, "YuanShen.exe", "GenshinImpact.exe"}:
+        pids.update(get_process_pids(name))
+    if not pids:
+        return None
+
+    user32 = ctypes.windll.user32
+    best_hwnd, best_area = None, -1
+
+    for hwnd in _enum_top_level_windows():
+        try:
+            if not user32.IsWindowVisible(hwnd):
+                continue
+            pid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if pid.value not in pids:
+                continue
+            if user32.GetWindowTextLengthW(hwnd) <= 0:
+                continue
+            rect = wintypes.RECT()
+            if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                continue
+            area = max(0, rect.right - rect.left) * max(0, rect.bottom - rect.top)
+            if area > best_area:
+                best_hwnd, best_area = hwnd, area
+        except Exception:
+            continue
+
+    return best_hwnd
+
+
+def bring_window_to_foreground(hwnd, retries: int = 3) -> bool:
+    """
+    把指定窗口切到前台。
+
+    Windows 有前台锁定（foreground lock），普通 SetForegroundWindow 常常无效，
+    这里组合使用 AttachThreadInput + SetForegroundWindow + SwitchToThisWindow 提高成功率。
+    """
+    if not hwnd:
+        return False
+
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+
+    try:
+        if user32.IsIconic(hwnd):
+            user32.ShowWindow(hwnd, 9)   # SW_RESTORE
+        else:
+            user32.ShowWindow(hwnd, 5)   # SW_SHOW
+    except Exception:
+        pass
+
+    for _ in range(max(1, retries)):
+        try:
+            if user32.GetForegroundWindow() == hwnd:
+                return True
+
+            cur_tid = kernel32.GetCurrentThreadId()
+            fg_hwnd = user32.GetForegroundWindow()
+            fg_tid = user32.GetWindowThreadProcessId(fg_hwnd, None) if fg_hwnd else 0
+
+            attached = False
+            if fg_tid and fg_tid != cur_tid:
+                attached = bool(user32.AttachThreadInput(cur_tid, fg_tid, True))
+            try:
+                user32.BringWindowToTop(hwnd)
+                user32.SetForegroundWindow(hwnd)
+                user32.SetActiveWindow(hwnd)
+                user32.SetFocus(hwnd)
+            finally:
+                if attached:
+                    user32.AttachThreadInput(cur_tid, fg_tid, False)
+
+            # 兜底：未公开但常用的切换接口
+            try:
+                user32.SwitchToThisWindow(hwnd, True)
+            except Exception:
+                pass
+        except Exception as e:
+            logger.debug(f"切换窗口到前台出错: {e}")
+
+        time.sleep(0.3)
+        try:
+            if user32.GetForegroundWindow() == hwnd:
+                return True
+        except Exception:
+            break
+
+    return False
+
+
+# ============================================================
+# 焦点守护：日志出现“不是原神 …… 暂停”时把原神切到前台（v0.1.3）
+# ============================================================
+class FocusGuard:
+    """
+    监听 BetterGI 日志：出现“不是原神 …… 暂停”时，延迟若干秒把原神窗口切到前台。
+    运行期按 cancel_key（默认 F12）可取消 / 恢复该功能，状态不写入配置文件。
+    """
+
+    def __init__(self, config: dict, game_process: str = "Yuanshen.exe", writer=None):
+        cfg = (config or {}).get("focus_game", {}) or {}
+        self.config_enabled = bool(cfg.get("enabled", True))
+        keywords = cfg.get("trigger_keywords") or ["不是原神", "暂停"]
+        self.keywords = [str(k) for k in keywords if str(k).strip()]
+        self.delay = max(0.0, float(cfg.get("delay_seconds", 3) or 0))
+        self.cooldown = max(0.0, float(cfg.get("cooldown_seconds", 30) or 0))
+        self.retries = max(1, int(cfg.get("retry_times", 6) or 1))
+        self.retry_interval = max(1.0, float(cfg.get("retry_interval_seconds", 5) or 5))
+
+        key_name = str(cfg.get("cancel_key", "F12") or "F12").strip().upper()
+        self.cancel_key_name = key_name if key_name in VK_CODES else "F12"
+        self.cancel_vk = VK_CODES[self.cancel_key_name]
+
+        self.game_process = game_process
+        self.writer = writer
+
+        self._lock = threading.Lock()
+        self._armed = True
+        self._busy = False
+        self._last_trigger = 0.0
+        self._cancel_event = threading.Event()
+        self._stop_event = threading.Event()
+        self._hotkey_thread = None
+
+        self.trigger_count = 0
+        self.focus_count = 0
+
+    # ---------- 日志辅助 ----------
+    def _note(self, level: int, message: str):
+        logger.log(level, message)
+        if self.writer is not None:
+            self.writer.comment(message)
+
+    # ---------- 生命周期 ----------
+    def start(self):
+        if not self.config_enabled:
+            logger.info("自动切前台已禁用（focus_game.enabled = false）")
+            return
+        self._stop_event.clear()
+        self._hotkey_thread = threading.Thread(
+            target=self._hotkey_loop, daemon=True, name="FocusGuardHotkey"
+        )
+        self._hotkey_thread.start()
+        logger.info(
+            f"自动切前台已启用：日志出现“{' / '.join(self.keywords)}”时切换到原神窗口；"
+            f"运行期按 {self.cancel_key_name} 取消 / 恢复（不写入配置文件）"
+        )
+
+    def stop(self):
+        self._stop_event.set()
+        self._cancel_event.set()
+        thread = self._hotkey_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=2)
+
+    # ---------- 热键 ----------
+    def _hotkey_loop(self):
+        try:
+            user32 = ctypes.windll.user32
+        except Exception:
+            return
+        prev_pressed = False
+        while not self._stop_event.is_set():
+            try:
+                pressed = bool(user32.GetAsyncKeyState(self.cancel_vk) & 0x8000)
+            except Exception:
+                pressed = False
+            if pressed and not prev_pressed:
+                self._toggle()
+            prev_pressed = pressed
+            time.sleep(0.05)
+
+    def _toggle(self):
+        with self._lock:
+            self._armed = not self._armed
+            armed = self._armed
+        if not armed:
+            self._cancel_event.set()
+            self._note(
+                logging.WARNING,
+                f"按下 {self.cancel_key_name}：已取消自动切前台"
+                f"（本次运行内不再自动切换，再按一次可恢复）",
+            )
+        else:
+            self._cancel_event.clear()
+            self._note(logging.INFO, f"按下 {self.cancel_key_name}：已恢复自动切前台")
+
+    # ---------- 触发 ----------
+    @staticmethod
+    def _normalize(text: str) -> str:
+        """去掉空白与常见中英文标点，便于跨格式匹配"""
+        return re.sub(r"[\s，。！？、：；,.!?:;\"'“”‘’（）()\[\]【】<>《》]", "", text or "")
+
+    def _is_trigger(self, line: str) -> bool:
+        if not self.keywords:
+            return False
+        text = self._normalize(line)
+        return all(self._normalize(kw) in text for kw in self.keywords)
+
+    def feed(self, line: str):
+        """由日志采集层回调：每收到一行 BetterGI 日志调用一次"""
+        if not self.config_enabled or not line:
+            return
+        with self._lock:
+            if not self._armed or self._busy:
+                return
+            now = time.monotonic()
+            if now - self._last_trigger < self.cooldown:
+                return
+            if not self._is_trigger(line):
+                return
+            self._last_trigger = now
+            self._busy = True
+        threading.Thread(target=self._do_focus, daemon=True, name="FocusGuardWorker").start()
+
+    # ---------- 切前台 ----------
+    def _sleep_cancellable(self, seconds: float) -> bool:
+        """可被 F12 / 停止信号打断的等待；返回 True 表示被取消"""
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            if (self._stop_event.is_set() or self._cancel_event.is_set()
+                    or not self._armed):
+                return True
+            time.sleep(0.1)
+        return False
+
+    def _do_focus(self):
+        try:
+            self._cancel_event.clear()
+            self.trigger_count += 1
+            self._note(
+                logging.WARNING,
+                "BetterGI 报告当前焦点窗口不是原神（日志命中“不是原神 … 暂停”），"
+                "准备把原神切到前台",
+            )
+
+            if self.delay > 0:
+                self._note(
+                    logging.INFO,
+                    f"{self.delay:g} 秒后把原神切到前台，按 {self.cancel_key_name} 可取消",
+                )
+                if self._sleep_cancellable(self.delay):
+                    self._cancel_event.clear()
+                    if self._stop_event.is_set():
+                        return
+                    self._note(logging.INFO, "已取消本次切换原神到前台")
+                    return
+
+            hwnd = None
+            for attempt in range(1, self.retries + 1):
+                hwnd = find_game_window(self.game_process)
+                if hwnd:
+                    break
+                if attempt < self.retries:
+                    self._note(
+                        logging.INFO,
+                        f"暂未找到原神窗口（第 {attempt}/{self.retries} 次），"
+                        f"{self.retry_interval:g} 秒后重试",
+                    )
+                    if self._sleep_cancellable(self.retry_interval):
+                        self._cancel_event.clear()
+                        if self._stop_event.is_set():
+                            return
+                        self._note(logging.INFO, "已取消本次切换原神到前台")
+                        return
+
+            if not hwnd:
+                self._note(
+                    logging.WARNING,
+                    f"未找到原神窗口（进程 {self.game_process} 未运行或无可切窗口），放弃本次切换",
+                )
+                return
+
+            if bring_window_to_foreground(hwnd, retries=3):
+                self.focus_count += 1
+                self._note(logging.INFO, f"已把原神窗口切到前台（HWND=0x{int(hwnd):X}）")
+            else:
+                self._note(
+                    logging.WARNING,
+                    "尝试把原神切到前台失败（可能受系统前台锁定或独占全屏影响）",
+                )
+        except Exception as e:
+            logger.exception(f"自动切前台出错: {e}")
+        finally:
+            with self._lock:
+                self._busy = False
+
+
+# ============================================================
 # BetterGI 启动
 # ============================================================
 def launch_bettergi(config: dict, config_name: str):
@@ -454,7 +889,7 @@ def launch_bettergi(config: dict, config_name: str):
     启动 BetterGI 并指定一条龙配置。
 
     返回: (是否成功, Popen 对象或 None)
-    注意：stdout/stderr 必须由调用方持续读取（本项目由 BgiOutputWriter 的读取线程负责），
+    注意：stdout/stderr 必须由调用方持续读取（本项目由 BgiStdoutReader 的读取线程负责），
           否则管道缓冲区写满后 BetterGI 会被阻塞。
     """
     bgi_path = config.get("bettergi_path", "")
@@ -525,12 +960,19 @@ def capture_bgi_log_baseline(bgi_path: str):
 
 
 class MergedLogWriter:
-    """线程安全的合并日志写入器"""
+    """
+    线程安全的合并日志写入器。
 
-    def __init__(self, path: Path):
+    同时承担两件事：
+      1. 把 BetterGI 原始日志写入合并日志文件；
+      2. 按需回显到终端（v0.1.3），并把原始行交给监听回调（例如 FocusGuard）。
+    """
+
+    def __init__(self, path: Path, listeners=None):
         self.path = Path(path)
         self._lock = threading.Lock()
         self._fh = None
+        self._listeners = list(listeners or [])
         self.lines = 0
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -538,21 +980,36 @@ class MergedLogWriter:
         except OSError as e:
             logger.error(f"无法创建合并日志文件 {self.path}: {e}")
 
-    def write(self, text: str):
-        if self._fh is None:
-            return
-        with self._lock:
-            try:
-                self._fh.write(text.rstrip("\r\n") + "\n")
-                self._fh.flush()
-                self.lines += 1
-            except (OSError, ValueError) as e:
-                logger.error(f"写入合并日志失败: {e}")
+    def add_listener(self, callback):
+        """注册“收到一行 BetterGI 原始日志”的回调"""
+        if callback is not None:
+            self._listeners.append(callback)
+
+    def write(self, text: str, echo: bool = False, notify: bool = True):
+        line = text.rstrip("\r\n")
+        if self._fh is not None:
+            with self._lock:
+                try:
+                    self._fh.write(line + "\n")
+                    self._fh.flush()
+                    self.lines += 1
+                except (OSError, ValueError) as e:
+                    logger.error(f"写入合并日志失败: {e}")
+
+        if echo:
+            console_write(line)
+
+        if notify and self._listeners:
+            for callback in list(self._listeners):
+                try:
+                    callback(line)
+                except Exception as e:
+                    logger.debug(f"日志监听回调出错: {e}")
 
     def comment(self, text: str):
-        """写入一条带时间戳的说明行（便于日后阅读合并日志）"""
+        """写入一条带时间戳的说明行（便于日后阅读合并日志），不触发监听回调"""
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self.write(f"#### [{stamp}] {text}")
+        self.write(f"#### [{stamp}] {text}", echo=False, notify=False)
 
     def close(self):
         if self._fh is None:
@@ -567,15 +1024,16 @@ class MergedLogWriter:
 
 class BgiStdoutReader(threading.Thread):
     """
-    后台线程：持续读取 BetterGI 子进程的终端输出并写入合并日志。
-    命令行启动 BetterGI 时，其运行日志会直接打印到终端，这正是我们要采集的内容。
+    后台线程：持续读取 BetterGI 子进程的终端输出，写入合并日志，
+    并在检测到控制台时同步回显到当前终端（v0.1.3）。
     """
 
-    def __init__(self, stream, writer: MergedLogWriter, tag: str = "stdout"):
+    def __init__(self, stream, writer: MergedLogWriter, tag: str = "stdout", echo: bool = True):
         super().__init__(daemon=True, name="BgiStdoutReader")
         self._stream = stream
         self._writer = writer
         self._tag = tag
+        self.echo = echo and CONSOLE_STREAM is not None
         self.lines = 0
 
     def run(self):
@@ -584,7 +1042,7 @@ class BgiStdoutReader(threading.Thread):
                 line = decode_output(raw).rstrip("\r\n")
                 if not line:
                     continue
-                self._writer.write(line)
+                self._writer.write(line, echo=self.echo)
                 self.lines += 1
         except (OSError, ValueError) as e:
             logger.debug(f"读取 BetterGI {self._tag} 结束: {e}")
@@ -602,9 +1060,10 @@ class BgiLogFollower:
     交接给了已存在的实例），仍然能拿到日志。
     """
 
-    def __init__(self, bgi_path: str, writer: MergedLogWriter, baseline=None):
+    def __init__(self, bgi_path: str, writer: MergedLogWriter, baseline=None, echo: bool = False):
         self.log_dir = get_bgi_log_dir(bgi_path)
         self.writer = writer
+        self.echo = echo and CONSOLE_STREAM is not None
         self._baseline = {}
         if baseline:
             path, size = baseline
@@ -683,7 +1142,7 @@ class BgiLogFollower:
                 # 不完整的行（BGI 正在写入），回退等待下次读取
                 self._handle.seek(pos_before)
                 break
-            self.writer.write(line)
+            self.writer.write(line, echo=self.echo)
             written += 1
             self.lines += 1
         try:
@@ -719,15 +1178,17 @@ def monitor_bettergi(config: dict, bgi_path: str, proc, writer: MergedLogWriter,
 
     reader = None
     if capture_stdout and proc is not None and proc.stdout is not None:
-        reader = BgiStdoutReader(proc.stdout, writer)
+        reader = BgiStdoutReader(proc.stdout, writer, echo=True)
         reader.start()
         logger.info("已启动终端输出采集线程（BetterGI stdout）")
+        if reader.echo:
+            logger.info("终端回显: 已开启，BetterGI 日志将同步打印到当前终端")
     else:
         logger.info("终端输出采集已关闭")
 
     follower = None
     if follow_file:
-        follower = BgiLogFollower(bgi_path, writer, baseline)
+        follower = BgiLogFollower(bgi_path, writer, baseline, echo=(reader is None))
         logger.info("已启用 BetterGI 日志文件跟随（配置开启）")
 
     start = time.monotonic()
@@ -776,7 +1237,10 @@ def monitor_bettergi(config: dict, bgi_path: str, proc, writer: MergedLogWriter,
                     f"启动 {stdout_grace:g} 秒后仍未采集到终端输出，"
                     f"自动启用 BetterGI 日志文件跟随作为兜底"
                 )
-                follower = BgiLogFollower(bgi_path, writer, baseline)
+                follower = BgiLogFollower(
+                    bgi_path, writer, baseline,
+                    echo=(reader is None or reader.lines == 0)
+                )
                 follower.poll()
 
             # 更新日计划终止
@@ -905,6 +1369,12 @@ def test_process(config: dict):
         pids = get_process_pids(name)
         logger.info(f"{name}: {'运行中 PID=' + ', '.join(map(str, pids)) if pids else '未运行'}")
 
+    hwnd = find_game_window(game_proc)
+    if hwnd:
+        logger.info(f"原神主窗口: HWND=0x{int(hwnd):X}")
+    else:
+        logger.info("原神主窗口: 未找到（游戏未运行或窗口尚未创建）")
+
     bgi_path = config.get("bettergi_path", "")
     log_dir = get_bgi_log_dir(bgi_path)
     logger.info(f"BetterGI 路径: {bgi_path}")
@@ -917,6 +1387,47 @@ def test_process(config: dict):
         logger.info("当前日志基线: 未找到匹配的日志文件")
 
     logger.info(f"合并日志将写入: {SESSION_LOG_DIR / ('bettergi-merge-' + SESSION_TS + '.log')}")
+    logger.info(f"终端回显: {'已启用' if CONSOLE_STREAM is not None else '未检测到控制台'}")
+
+
+def test_time(config: dict):
+    """测试模式：验证版本 / 紊乱爆发期时间判定"""
+    logger.info("=" * 50)
+    logger.info("[测试模式] testtime - 验证版本与紊乱爆发期判定")
+    logger.info("=" * 50)
+
+    now_dt = datetime.now()
+    major, minor, day_in = get_version_info(now_dt.date())
+    burst_start, burst_end = get_burst_window(major, minor)
+    mapping = config.get("config_name_mapping", {})
+
+    logger.info(f"当前系统时间: {now_dt:%Y-%m-%d %H:%M:%S}")
+    logger.info(f"当前版本: {major}.{minor}（版本内第 {day_in + 1} 天 / 共 {VERSION_CYCLE} 天）")
+    logger.info(
+        f"版本更新: {get_version_start_date(major, minor):%Y-%m-%d} "
+        f"{MAINTENANCE_START_HOUR:02d}:00 停服维护，预计 {SERVER_OPEN_HOUR:02d}:00 开服"
+    )
+    logger.info(
+        f"紊乱爆发期: {burst_start:%Y-%m-%d %H:%M} ~ "
+        f"{(burst_end - timedelta(minutes=1)):%Y-%m-%d %H:%M}"
+    )
+
+    burst, _ver, reason = is_burst_period(now_dt, config)
+    name = mapping.get("burst" if burst else "normal", "wz" if burst else "dm")
+    logger.info(f"判定结果: {reason} -> 一条龙配置 {name}")
+
+    logger.info("-" * 50)
+    logger.info("后续版本时间表（供核对）:")
+    base_start = get_version_start_date(major, minor)
+    for i in range(4):
+        ver_start = base_start + timedelta(days=i * VERSION_CYCLE)
+        v_major, v_minor, _ = get_version_info(ver_start)
+        b_start, b_end = get_burst_window(v_major, v_minor)
+        logger.info(
+            f"  {v_major}.{v_minor}: 更新 {ver_start:%Y-%m-%d} "
+            f"{MAINTENANCE_START_HOUR:02d}:00 / 开服约 {SERVER_OPEN_HOUR:02d}:00，"
+            f"爆发期 {b_start:%m-%d %H:%M} ~ {(b_end - timedelta(minutes=1)):%m-%d %H:%M}"
+        )
 
 
 # ============================================================
@@ -927,6 +1438,11 @@ def main():
     logger.info(f"{APP_NAME} v{VERSION} 启动")
     logger.info(f"当前时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("=" * 60)
+
+    if CONSOLE_STREAM is not None:
+        logger.info("终端回显: 已启用（BetterGI 运行日志将同步输出到当前终端）")
+    else:
+        logger.info("终端回显: 未检测到控制台（日志仅写入文件；从命令行运行可看到实时输出）")
 
     # --- UAC 权限检查 ---
     if not is_admin():
@@ -950,7 +1466,7 @@ def main():
     config = load_config()
 
     # --- 处理命令行参数 ---
-    args = sys.argv[1:] if not getattr(sys, 'frozen', False) else sys.argv[1:]
+    args = sys.argv[1:]
 
     if "testbgi" in args:
         test_bgi(config)
@@ -964,33 +1480,14 @@ def main():
         test_process(config)
         return
 
+    if "testtime" in args:
+        test_time(config)
+        return
+
     # --- 正常启动流程 ---
-    today = date.today()
-
-    # 获取版本信息
-    major, minor, day_in = get_version_info(today)
-    version_str = f"{major}.{minor}"
-    logger.info(f"当前版本: {version_str}，版本内第 {day_in + 1} 天")
-
-    # 判断是否为更新日
-    update_day = is_update_day(today)
-    maintenance = is_maintenance_time()
-
-    if update_day:
-        logger.info(f"今天是版本更新日（{version_str}）")
-
-    # 判断爆发期
-    burst, ver_str, reason = is_burst_period(today, config)
-    logger.info(f"日期判断结果: {reason}")
-
-    # 确定配置名称
-    mapping = config.get("config_name_mapping", {})
-    if burst:
-        config_name = mapping.get("burst", "wz")
-    else:
-        config_name = mapping.get("normal", "dm")
-
-    logger.info(f"使用配置名称: {config_name}")
+    # v0.1.3：一切判定以“实际启动游戏的系统时间”为准，精确到分钟
+    now_dt = datetime.now()
+    log_version_context(now_dt, config)
 
     bgi_path = config.get("bettergi_path", "")
 
@@ -1001,6 +1498,32 @@ def main():
     baseline = capture_bgi_log_baseline(bgi_path)
     if baseline:
         logger.info(f"BetterGI 日志基线: {baseline[0]}（{baseline[1]} 字节）")
+
+    # --- 判定时刻尽量贴近真正拉起 BetterGI 的时间（前面的检查可能已耗时数秒）---
+    now_dt = datetime.now()
+    update_day = is_update_day(now_dt.date())
+
+    if update_day:
+        logger.info(f"今天是版本更新日（{now_dt:%Y-%m-%d}）")
+        if is_maintenance_time(now_dt):
+            logger.info(
+                f"当前仍处于停服维护窗口（{MAINTENANCE_START_HOUR:02d}:00 ~ "
+                f"{SERVER_OPEN_HOUR:02d}:00），游戏尚不可登录"
+            )
+
+    # 判断爆发期（按真实时间窗口，10:00 前自然落入常规配置）
+    burst, ver_str, reason = is_burst_period(now_dt, config)
+    logger.info(f"启动时刻: {now_dt:%Y-%m-%d %H:%M:%S}（版本 {ver_str}）")
+    logger.info(f"爆发期判定结果: {reason}")
+
+    # 确定配置名称
+    mapping = config.get("config_name_mapping", {})
+    if burst:
+        config_name = mapping.get("burst", "wz")
+    else:
+        config_name = mapping.get("normal", "dm")
+
+    logger.info(f"使用配置名称: {config_name}（版本 {ver_str}，判定时刻 {now_dt:%H:%M:%S}）")
 
     # --- 启动 BetterGI ---
     success, proc = launch_bettergi(config, config_name)
@@ -1030,17 +1553,36 @@ def main():
     if mon.get("enabled", True):
         merged_path = SESSION_LOG_DIR / f"bettergi-merge-{SESSION_TS}.log"
         writer = MergedLogWriter(merged_path)
+
+        # --- 焦点守护（v0.1.3）---
+        check_cfg = config.get("pre_launch_check", {})
+        game_proc = check_cfg.get("game_process", "Yuanshen.exe")
+        guard = FocusGuard(config, game_proc, writer)
+        writer.add_listener(guard.feed)
+        guard.start()
+
         try:
-            writer.write(f"# BetterGI 运行日志合并文件")
-            writer.write(f"# 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            writer.write(f"# 启动器版本: v{VERSION}")
-            writer.write(f"# BetterGI: {bgi_path}")
-            writer.write(f"# 一条龙配置: {config_name}（{reason}）")
-            writer.write("# " + "=" * 58)
+            writer.write("# BetterGI 运行日志合并文件", notify=False)
+            writer.write(f"# 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", notify=False)
+            writer.write(f"# 启动器版本: v{VERSION}", notify=False)
+            writer.write(f"# BetterGI: {bgi_path}", notify=False)
+            writer.write(f"# 一条龙配置: {config_name}（{reason}）", notify=False)
+            writer.write(f"# 判定时刻: {now_dt:%Y-%m-%d %H:%M:%S}（版本 {ver_str}）", notify=False)
+            writer.write("# " + "=" * 58, notify=False)
 
             monitor_bettergi(config, bgi_path, proc, writer,
                              baseline=baseline, pending_kill=pending_kill)
         finally:
+            guard.stop()
+            if guard.config_enabled:
+                writer.comment(
+                    f"焦点守护统计：触发 {guard.trigger_count} 次，"
+                    f"成功切前台 {guard.focus_count} 次"
+                )
+                logger.info(
+                    f"焦点守护统计：触发 {guard.trigger_count} 次，"
+                    f"成功切前台 {guard.focus_count} 次"
+                )
             writer.close()
     else:
         logger.info("监听功能已禁用（monitor.enabled = false），启动完成后直接退出")

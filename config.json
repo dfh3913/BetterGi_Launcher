@@ -21,6 +21,15 @@
     "follow_log_file_fallback": true,
     "stdout_grace_seconds": 20
   },
+  "focus_game": {
+    "enabled": true,
+    "trigger_keywords": ["不是原神", "暂停"],
+    "delay_seconds": 3,
+    "cooldown_seconds": 30,
+    "retry_times": 6,
+    "retry_interval_seconds": 5,
+    "cancel_key": "F12"
+  },
   "special_rules": {
     "burst_first_day_as_normal": true,
     "update_day_kill_after_dm": true,
