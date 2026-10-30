@@ -1,5 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from pathlib import Path
+
+ICON_PATH = str(Path(SPECPATH) / 'assets' / 'app.ico')
+
 
 a = Analysis(
     ['BgiLauncher.py'],
@@ -35,5 +39,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['D:\\asus\\Documents\\mic\\BlackScreen_240x240_32bit.ico'],
+    icon=[ICON_PATH],
 )

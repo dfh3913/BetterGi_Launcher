@@ -4,7 +4,7 @@
 >
 > 一个按“实际启动游戏的时间”自动匹配启动参数、智能切换 BetterGI 一条龙配置、在原神失焦时自动把它拉回前台、并在 BetterGI 崩溃后自动重启续跑的 Windows 自动化工具。
 
-- 当前版本：**v0.1.4**
+- 当前版本：**v0.1.5**
 - 适用场景：原神 7.x 版本的紊乱爆发期 / 常规期配置自动切换
 
 ---
@@ -66,7 +66,7 @@
 - ✅ **按启动时刻精确判定**（v0.1.3）：读取系统时间（精确到分钟），按官方真实窗口判断爆发期，10:00 前后自动区分，不再依赖“脚本固定 7:20 运行”的假设。
 - ✅ **紊乱爆发期识别**：自动切换 `wz` / `dm` 配置，并修正旧版把爆发期结束日提前一天的问题。
 - ✅ **终端日志回显**（v0.1.3）：从命令行启动本程序时，BetterGI 的运行日志同步打印到当前终端；打包为窗口程序时通过 `AttachConsole` 附着父控制台。
-- ✅ **焦点守护**（v0.1.3）：BetterGI 日志出现“不是原神 …… 暂停”时，自动找到原神窗口并切到前台；运行期按 **F12** 可取消 / 恢复（不写入配置文件）。
+- ✅ **焦点守护**（v0.1.3，v0.1.5 加固）：BetterGI 日志出现“不是原神 …… 暂停”时，等待 **x 秒**（`delay_seconds`）把原神切到前台，且 **y 秒内至多触发一次**（`cooldown_seconds`）；运行期按 **F12** 可取消 / 恢复（不写入配置文件）。
 - ✅ **崩溃自动重启**（v0.1.4）：BetterGI 因 `Fatal error` / `AccessViolationException` 等致命错误或非零退出码退出、且一条龙任务未完成时，自动重启 BetterGI 续跑；任务已完成、游戏已退出、启动器主动终止时不会误重启。
 - ✅ **启动前进程检查**（v0.1.1）：游戏未运行而 BetterGI 残留时先 `taskkill` 清理再启动，避免新一轮任务被前一天的残留进程卡住。
 - ✅ **持续日志监听与合并**（v0.1.1）：实时读取 BetterGI 终端输出（日志文件跟随兜底），合并写入 `bettergi-merge-*.log`，直至 BetterGI 进程关闭才退出。
@@ -74,7 +74,7 @@
 - ✅ **UAC 权限保护**：无管理员权限时弹窗提示并退出，确保任务计划以最高权限运行。
 - ✅ **首次运行引导**：自动创建配置文件，并弹出文件选择对话框选择 `BetterGI.exe`。
 - ✅ **完整日志系统**：按日期分目录，常规日志、错误日志、BetterGI 合并日志分离。
-- ✅ **测试模式**：`testbgi` / `testtk` / `testproc` / `testtime`，可快速验证唤起、taskkill、进程检测与时间判定。
+- ✅ **测试模式**：`testbgi` / `testtk` / `testproc` / `testtime` / `testfocus`，可快速验证唤起、taskkill、进程检测、时间判定与自动切前台。
 - ✅ **高度可配置**：配置名称、进程检查、监听策略、焦点守护、终止进程列表等均可通过 `config.json` 调整。
 - ✅ **单文件打包**：支持 PyInstaller 打包为独立 exe，附带自定义图标。
 
@@ -102,13 +102,16 @@ BgiLauncher/
 ├── config.json                    # 配置文件（首次运行自动生成）
 ├── readme.md                      # 本说明文档
 ├── BetterGI_Launcher.spec         # PyInstaller 打包脚本
-├── BlackScreen_240x240_32bit.ico  # 程序图标
+├── assets/
+│   ├── app.ico                    # 程序图标（多尺寸 16~256，已抠图）
+│   └── icon_1024.png              # 图标源图（透明背景）
+├── BlackScreen_240x240_32bit.ico  # 旧版图标（保留存档）
 ├── .gitignore                     # 忽略 build/ dist/ log/ 等产物
 ├── log/                           # 运行日志目录（自动创建，已被 git 忽略）
-│   └── 2026-10-28/
-│       ├── 21-39-51.log                 # 启动器常规日志
-│       ├── error-21-39-51.log           # 启动器错误日志
-│       └── bettergi-merge-21-39-51.log  # BetterGI 运行日志合并文件
+│   └── 2026-10-30/
+│       ├── 23-50-12.log                 # 启动器常规日志
+│       ├── error-23-50-12.log           # 启动器错误日志
+│       └── bettergi-merge-23-50-12.log  # BetterGI 运行日志合并文件
 └── dist/
     └── BetterGI_Launcher.exe      # 打包后的可执行文件
 ```
@@ -259,8 +262,8 @@ python BgiLauncher.py
 | `monitor.stdout_grace_seconds`             | number | `20`                               | 判定“终端没有输出”的宽限时间（秒）。                                       |
 | `focus_game.enabled`                       | bool   | `true`                             | 是否启用“原神失焦自动切前台”。**默认开启**；运行期按 F12 可临时取消（不写回配置）。             |
 | `focus_game.trigger_keywords`              | array  | `["不是原神", "暂停"]`                   | 触发关键词。日志行需**同时**包含全部关键词（忽略空格与标点）才触发。                       |
-| `focus_game.delay_seconds`                 | number | `3`                                | 命中后延迟多少秒再切换，留出按 F12 取消的时间。                                |
-| `focus_game.cooldown_seconds`              | number | `30`                               | 两次自动切换之间的最小间隔（秒），避免日志刷屏导致反复抢焦点。                           |
+| `focus_game.delay_seconds`                 | number | `3`                                | **等待 x 秒**：命中后延迟多少秒再切换，留出按 F12 取消的时间。                |
+| `focus_game.cooldown_seconds`              | number | `30`                               | **冷却 y 秒**：多少秒内至多触发一次，避免日志刷屏导致反复抢焦点。                      |
 | `focus_game.retry_times`                   | number | `6`                                | 找不到原神窗口时的重试次数（游戏可能还没启动完）。                                 |
 | `focus_game.retry_interval_seconds`        | number | `5`                                | 每次重试的间隔（秒）。                                               |
 | `focus_game.cancel_key`                    | string | `"F12"`                            | 取消 / 恢复快捷键，支持 `F1` ~ `F12`。                                |
@@ -325,12 +328,46 @@ BetterGI 由命令行启动时会把运行日志打印到终端。启动器接�
 当前获取焦点的窗口为: Idle，不是原神，暂停
 ```
 
-启动器会实时匹配这行日志（检测“**不是原神**”与“**暂停**”两个关键词，忽略空格与标点，即需求中的六个字“不是原神暂停”），并在 `delay_seconds` 秒后：
+启动器会实时匹配这行日志（检测“**不是原神**”与“**暂停**”两个关键词，忽略空格与标点，即需求中的六个字“不是原神暂停”），并在 **等待 x 秒** 后把原神切到前台；同一时间窗口内**每 y 秒至多触发一次**，避免日志刷屏导致反复抢焦点：
+
+```json
+"focus_game": {
+  "delay_seconds": 3,
+  "cooldown_seconds": 30
+}
+```
+
+其中 `delay_seconds` 就是“等待 x 秒”，`cooldown_seconds` 就是“y 秒内至多触发一次”，两项都可以按需修改，启动时会在日志里打印实际取值。
+
+切换流程：
 
 1. 通过 `tasklist` 找到 `YuanShen.exe` / `GenshinImpact.exe` 的进程；
-2. 枚举其顶层可见窗口，取面积最大的那个作为游戏主窗口；
-3. 依次尝试 `ShowWindow` + `AttachThreadInput` + `SetForegroundWindow` + `SwitchToThisWindow`，绕过 Windows 的前台锁定，把原神切到前台；
-4. 校验 `GetForegroundWindow()` 是否等于目标窗口，失败会重试。
+2. 枚举该进程的所有顶层窗口，按“可见 → 有标题 → 面积最大”排序选出游戏主窗口（进程名对不上时还会按标题 `原神` / `Genshin Impact` 兜底）；
+3. 依次尝试 5 种切换方式，每种都会校验 `GetForegroundWindow()`：
+   `SwitchToThisWindow` → `AttachThreadInput + SetForegroundWindow` → ALT 键解锁 → 最小化 / 还原 → 置顶切换；
+4. 全部失败会打印当前前台窗口的标题与 PID，便于排查。
+
+> **v0.1.5 加固说明**：旧版没有声明 `user32` 的函数签名，64 位下 `HWND` 有可能被按 32 位截断；窗口查找也强制要求“可见且有标题”，游戏最小化或标题为空时会直接判为找不到。这两点已修正，并补充了多策略切换。
+
+### 真机验证结果（v0.1.5）
+
+在 1920×1080、原神全屏（`UnityWndClass` / `原神` / 1280×766 窗口区）环境下实测：
+
+| 场景                         | 结果              |
+| -------------------------- | --------------- |
+| 记事本抢焦点后切回                  | ✅ 0.15 秒        |
+| 游戏最小化 + 桌面（Progman）        | ✅ 恢复并切到前台       |
+| 置顶窗口（HWND_TOPMOST）         | ✅ 切回            |
+| 桌面右键菜单（`#32768` 弹窗）        | ✅ 切回并关闭菜单       |
+| 完整链路（触发 → 等待 x 秒 → 冷却 y 秒） | ✅ 等待 3.2 秒切回，冷却内不重复 |
+
+自己验证时可直接运行：
+
+```bash
+BetterGI_Launcher.exe testfocus
+```
+
+它会打印原神进程与所有窗口句柄，实际切一次前台，再模拟一条失焦日志走完整链路（含 `delay_seconds` 与 `cooldown_seconds`），最后输出“触发 N 次 / 成功 M 次”。
 
 ### 按 F12 取消
 
@@ -522,6 +559,7 @@ This is often an indication that other memory is corrupt.
 | `testtk`   | 验证 taskkill 功能是否正常。                          |
 | `testproc` | 输出进程状态、原神主窗口句柄、BetterGI 日志目录、日志基线、终端回显状态。    |
 | `testtime` | **（v0.1.3）** 输出当前版本、爆发期窗口、判定结果，以及后续 4 个版本的时间表。 |
+| `testfocus` | **（v0.1.5）** 列出原神进程与窗口句柄，实际切一次前台，再模拟失焦日志走完整链路。 |
 
 ### 测试时间判定（推荐先跑）
 
@@ -551,6 +589,30 @@ BetterGI_Launcher.exe testbgi     # BetterGI 唤起
 BetterGI_Launcher.exe testtk      # taskkill（会临时启动 notepad.exe）
 BetterGI_Launcher.exe testproc    # 进程 / 窗口 / 日志路径
 ```
+
+### 测试自动切前台
+
+```bash
+BetterGI_Launcher.exe testfocus
+```
+
+输出示例（真机实测）：
+
+```
+[INFO] 配置: enabled=True，等待 3 秒，30 秒内至多触发一次，取消键 F12
+[INFO] Yuanshen.exe: 运行中 PID=38156
+[INFO]   窗口 HWND=0xD05F6 pid=38156 class=UnityWndClass title='原神' visible=True iconic=False area=980315
+[INFO] 选中主窗口: HWND=0xD05F6 title='原神'
+[INFO] 切换前前台窗口: HWND=0x20502
+[INFO] 直接切换: 成功，当前前台 HWND=0xD05F6
+[INFO] 模拟 BetterGI 失焦日志，验证完整链路（等待 3 秒 + 30 秒冷却，按 F12 可取消）
+[WARNING] BetterGI 报告当前焦点窗口不是原神（日志命中“不是原神 … 暂停”），准备把原神切到前台
+[INFO] 3 秒后把原神切到前台，按 F12 可取消
+[INFO] 已把原神窗口切到前台（HWND=0xD05F6）
+[INFO] 焦点守护链路: 触发 1 次，成功切前台 1 次
+```
+
+若第一行就报“未找到窗口”，说明游戏没启动或进程名不对；若“直接切换: 失败”，日志里会给出当前前台窗口的标题与 PID。
 
 `testproc` 输出示例：
 
@@ -582,7 +644,7 @@ BetterGI_Launcher.exe testproc    # 进程 / 窗口 / 日志路径
   ```
   # BetterGI 运行日志合并文件
   # 生成时间: 2026-11-11 07:20:00
-  # 启动器版本: v0.1.3
+  # 启动器版本: v0.1.5
   # BetterGI: D:\Tools\Mhy tools\BetterGI\BetterGI.exe
   # 一条龙配置: wz（紊乱爆发期（版本内第 8 天，至 11-21 03:59 结束），使用爆发期配置）
   # 判定时刻: 2026-11-11 07:20:00（版本 7.2）
@@ -609,17 +671,21 @@ pyinstaller BetterGI_Launcher.spec
 或等价的命令行方式：
 
 ```bash
-pyinstaller --onefile --windowed --icon="BlackScreen_240x240_32bit.ico" --name "BetterGI_Launcher" BgiLauncher.py
+pyinstaller --onefile --windowed --icon="assets/app.ico" --name "BetterGI_Launcher" BgiLauncher.py
 ```
 
 | 参数           | 说明                                                          |
 | ------------ | ----------------------------------------------------------- |
 | `--onefile`  | 打包为单个 exe。                                                  |
 | `--windowed` | 不显示控制台窗口（GUI 模式）。v0.1.3 起窗口模式也能通过 `AttachConsole` 把日志回显到启动它的终端。 |
-| `--icon`     | 指定 `.ico` 图标。                                               |
+| `--icon`     | 指定 `.ico` 图标，仓库内为 `assets/app.ico`（16~256 多尺寸，由 `assets/icon_1024.png` 生成）。 |
 | `--name`     | 输出 exe 名称。                                                  |
 
 打包产物位于 `dist/BetterGI_Launcher.exe`。首次运行时会在同目录生成 `config.json` 与 `log/`。
+
+### 更换图标
+
+`assets/app.ico` 由 `assets/icon_1024.png`（1024×1024 透明背景）缩放生成，包含 16/24/32/48/64/128/256 七个尺寸。若想换成自己的图，把透明背景的 PNG 命名为 `icon_1024.png` 后按同样方式重新生成 ICO，或直接用 `--icon` 指向你的 `.ico` 即可。
 
 ---
 
@@ -654,9 +720,13 @@ pyinstaller --onefile --windowed --icon="BlackScreen_240x240_32bit.ico" --name "
 - F12 是全局轮询的，不要求窗口焦点，但若被其他软件（Steam / GeForce Experience 截图）占用，请把 `focus_game.cancel_key` 改成 `F11` 等其他键；
 - 取消后日志会打印“已取消自动切前台”，再按一次恢复。
 
-### Q7：日志提示“未找到原神窗口”？
+### Q7：日志提示“未找到原神窗口”，或切前台一直失败？
 
-游戏还没启动完，或进程名不是 `Yuanshen.exe`。程序已同时尝试 `YuanShen.exe` 与 `GenshinImpact.exe`；若仍失败，用 `testproc` 确认游戏进程与窗口是否正常。可适当增大 `focus_game.retry_times`。
+先运行 `testfocus`：它会打印原神进程 PID、所有顶层窗口（句柄 / 类名 / 标题 / 可见性 / 面积）以及实际切换结果。
+
+- 若列表为空：游戏没启动，或进程名不是 `Yuanshen.exe`（国际服为 `GenshinImpact.exe`，程序已自动兼容）；
+- 若找到了窗口但切换失败：日志会给出当前前台窗口的标题与 PID，常见原因是前台锁定或独占全屏，可把 `focus_game.retry_times` 调大，或改用无边框窗口模式；
+- 若从未触发：确认 `focus_game.enabled = true`，且 BetterGI 日志里确实出现“不是原神 …… 暂停”。
 
 ### Q8：合并日志是空的，或只有启动器标记？
 
@@ -703,6 +773,17 @@ BetterGI 的终端输出未被采集到，且文件兜底尚未触发。先跑 `
 ---
 
 ## 更新日志
+
+### v0.1.5
+
+- **修复：自动切前台不可用 / 不稳定**。
+  - 补齐 `user32` 函数签名，避免 64 位下 `HWND` 被按 32 位截断导致窗口操作全部失效。
+  - 窗口查找改为“可见 → 有标题 → 面积最大”评分，不再强制要求可见且有标题（游戏最小化时也能找到）；进程名对不上时按标题 `原神` / `Genshin Impact` 兜底。
+  - 切前台改为 5 种策略依次尝试并逐次校验：`SwitchToThisWindow` → `AttachThreadInput + SetForegroundWindow` → ALT 键解锁 → 最小化 / 还原 → 置顶切换；失败时打印当前前台窗口信息。
+- **等待与冷却可配置**：`focus_game.delay_seconds`（等待 x 秒）与 `focus_game.cooldown_seconds`（y 秒内至多触发一次），启动日志会打印实际取值。
+- **新增 `testfocus` 测试模式**：列出原神所有窗口句柄并实际切一次前台，再模拟失焦日志走完整链路。
+- **图标更换**：改为 `assets/app.ico`（由插画抠图生成，含 16~256 共 7 个尺寸），spec 通过 `SPECPATH` 引用，不再依赖绝对路径。
+- **真机验证**：记事本抢焦点、游戏最小化 + 桌面、置顶窗口、桌面右键菜单（`#32768`）四种场景均可切回；完整链路等待 3 秒后切回，冷却内不重复触发，F12 取消 / 恢复正常。
 
 ### v0.1.4
 
