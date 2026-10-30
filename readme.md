@@ -2,9 +2,9 @@
 
 > **本项目是由 DeepSeek v4.1f 编写的 Vibe 项目**
 >
-> 一个按“实际启动游戏的时间”自动匹配启动参数、智能切换 BetterGI 一条龙配置、并在原神失焦时自动把它拉回前台的 Windows 自动化工具。
+> 一个按“实际启动游戏的时间”自动匹配启动参数、智能切换 BetterGI 一条龙配置、在原神失焦时自动把它拉回前台、并在 BetterGI 崩溃后自动重启续跑的 Windows 自动化工具。
 
-- 当前版本：**v0.1.3**
+- 当前版本：**v0.1.4**
 - 适用场景：原神 7.x 版本的紊乱爆发期 / 常规期配置自动切换
 
 ---
@@ -19,6 +19,7 @@
 - [配置文件详解](#配置文件详解)
 - [终端日志回显](#终端日志回显)
 - [焦点守护：原神失焦自动切前台](#焦点守护原神失焦自动切前台)
+- [崩溃自动重启](#崩溃自动重启)
 - [启动前进程检查](#启动前进程检查)
 - [运行日志监听与合并](#运行日志监听与合并)
 - [日期与版本规则](#日期与版本规则)
@@ -39,7 +40,7 @@
 
 原神每个版本持续 42 天。版本更新后的第 8 天 10:00 起，「幽境危战」的**紊乱爆发期**开启，持续约 10 天（至第 18 天 03:59）。爆发期与非爆发期，玩家通常需要使用不同的 BetterGI 一条龙配置（默认 `wz` / `dm`）。此外，版本更新当天 06:00 起停服维护，约 11:00 开服。
 
-手动切换配置既繁琐又容易遗忘。本项目会读取**系统时间**，按真实的时间窗口判断是否处于紊乱爆发期，据此选择配置名称启动 BetterGI，并在运行期间持续接管日志、处理原神失焦。
+手动切换配置既繁琐又容易遗忘。本项目会读取**系统时间**，按真实的时间窗口判断是否处于紊乱爆发期，据此选择配置名称启动 BetterGI，并在运行期间持续接管日志、处理原神失焦；如果 BetterGI 在任务未完成时崩溃退出，还会自动把它重新拉起来继续跑。
 
 程序执行流程：
 
@@ -53,7 +54,9 @@
                             └─ 持续监听：终端输出（主）+ 日志文件（兜底）
                                  ├─ v0.1.3 回显到当前终端
                                  ├─ v0.1.3 命中“不是原神…暂停”→ 把原神切到前台（F12 取消）
-                                 └─ 直至 BetterGI 进程关闭 / 更新日延迟终止到期 → 收尾退出
+                                 └─ 直至 BetterGI 进程关闭 / 更新日延迟终止到期
+                                      ├─ v0.1.4 任务已完成 / 游戏已退出 → 收尾退出
+                                      └─ v0.1.4 崩溃且任务未完成 → 等待后重启 BetterGI（最多 N 次）
 ```
 
 ---
@@ -64,6 +67,7 @@
 - ✅ **紊乱爆发期识别**：自动切换 `wz` / `dm` 配置，并修正旧版把爆发期结束日提前一天的问题。
 - ✅ **终端日志回显**（v0.1.3）：从命令行启动本程序时，BetterGI 的运行日志同步打印到当前终端；打包为窗口程序时通过 `AttachConsole` 附着父控制台。
 - ✅ **焦点守护**（v0.1.3）：BetterGI 日志出现“不是原神 …… 暂停”时，自动找到原神窗口并切到前台；运行期按 **F12** 可取消 / 恢复（不写入配置文件）。
+- ✅ **崩溃自动重启**（v0.1.4）：BetterGI 因 `Fatal error` / `AccessViolationException` 等致命错误或非零退出码退出、且一条龙任务未完成时，自动重启 BetterGI 续跑；任务已完成、游戏已退出、启动器主动终止时不会误重启。
 - ✅ **启动前进程检查**（v0.1.1）：游戏未运行而 BetterGI 残留时先 `taskkill` 清理再启动，避免新一轮任务被前一天的残留进程卡住。
 - ✅ **持续日志监听与合并**（v0.1.1）：实时读取 BetterGI 终端输出（日志文件跟随兜底），合并写入 `bettergi-merge-*.log`，直至 BetterGI 进程关闭才退出。
 - ✅ **版本更新日特殊处理**：更新当天启动 `dm` 后，延迟指定秒数终止游戏与 BetterGI 进程。
@@ -84,7 +88,7 @@
 | 运行权限          | **管理员权限**（必需，用于 taskkill、切换原神窗口到前台）                                                                                         |
 | Python 版本（开发） | Python 3.8 或更高                                                                                                                  |
 | BetterGI 版本   | 0.45.3 及以上（支持 `startOneDragon <配置名称>`）                                                                                          |
-| 依赖库           | 仅标准库（`csv`, `ctypes`, `io`, `json`, `logging`, `os`, `re`, `subprocess`, `sys`, `threading`, `time`, `datetime`, `pathlib`, `tkinter`） |
+| 依赖库           | 仅标准库（`collections`, `csv`, `ctypes`, `io`, `json`, `logging`, `os`, `re`, `subprocess`, `sys`, `threading`, `time`, `datetime`, `pathlib`, `tkinter`） |
 
 > **注意**：`tkinter` 仅用于首次运行时的文件选择对话框，Windows 官方 Python 安装包默认包含。
 
@@ -205,6 +209,25 @@ python BgiLauncher.py
     "retry_interval_seconds": 5,
     "cancel_key": "F12"
   },
+  "restart": {
+    "enabled": true,
+    "max_restarts": 3,
+    "delay_seconds": 20,
+    "require_game_running": true,
+    "restart_on_clean_exit": false,
+    "crash_keywords": [
+      "Fatal error",
+      "Unhandled exception",
+      "AccessViolationException",
+      "Attempted to read or write protected memory",
+      "StackOverflowException",
+      "OutOfMemoryException"
+    ],
+    "completion_keywords": [
+      "一条龙和配置组任务结束",
+      "主窗体退出"
+    ]
+  },
   "special_rules": {
     "burst_first_day_as_normal": true,
     "update_day_kill_after_dm": true,
@@ -241,6 +264,13 @@ python BgiLauncher.py
 | `focus_game.retry_times`                   | number | `6`                                | 找不到原神窗口时的重试次数（游戏可能还没启动完）。                                 |
 | `focus_game.retry_interval_seconds`        | number | `5`                                | 每次重试的间隔（秒）。                                               |
 | `focus_game.cancel_key`                    | string | `"F12"`                            | 取消 / 恢复快捷键，支持 `F1` ~ `F12`。                                |
+| `restart.enabled`                          | bool   | `true`                             | 是否启用崩溃自动重启（v0.1.4）。                                       |
+| `restart.max_restarts`                     | number | `3`                                | 单次运行内最多重启几次，`0` 表示不重启。                                    |
+| `restart.delay_seconds`                    | number | `20`                               | 崩溃后等待多少秒再重启（留给游戏缓冲 / 用户按 F12 之外的中断）。                       |
+| `restart.require_game_running`             | bool   | `true`                             | 只在游戏进程仍在运行时重启；游戏已退出（正常收尾 / 手动关闭）则不重启，避免把游戏又拉起来。         |
+| `restart.restart_on_clean_exit`            | bool   | `false`                            | 退出码为 0 且无崩溃特征时是否也重启（默认关闭，避免误判手动关闭）。                        |
+| `restart.crash_keywords`                   | array  | 见上例                                | 日志中出现任一关键词即视为崩溃（大小写不敏感）。                                |
+| `restart.completion_keywords`              | array  | 见上例                                | 日志中出现任一关键词即视为任务已完成，不再重启。                                    |
 | `special_rules.burst_first_day_as_normal`  | bool   | `true`                             | **已由精确时间判定取代**（10:00 前必然走常规配置），保留仅为向后兼容；设为 `false` 会在日志中提示该项失效。 |
 | `special_rules.update_day_kill_after_dm`   | bool   | `true`                             | 版本更新日是否执行终止进程操作。                                          |
 | `special_rules.kill_delay_seconds`         | number | `60`                               | 启动 `dm` 后等待多少秒再终止进程。                                      |
@@ -324,6 +354,65 @@ BetterGI 由命令行启动时会把运行日志打印到终端。启动器接�
 
 ---
 
+## 崩溃自动重启
+
+*（v0.1.4 新增）*
+
+BetterGI 的部分异常发生在 .NET / ONNX 运行时底层，**进程直接被终止，BGI 自己来不及捕获**。例如自动战斗里做战技 CD 识别时：
+
+```
+[原神] Fatal error. System.AccessViolationException: Attempted to read or write protected memory.
+This is often an indication that other memory is corrupt.
+[原神]    at Compunet.YoloSharp.Services.SessionRunnerService.RunWithFixedOutput(...)
+[原神]    at BetterGenshinImpact.GameTask.AutoFight.Model.Avatar.IsESkillReadyByClassify(...)
+```
+
+这类 `AccessViolationException` 是 CLR 的致命错误（corrupted process state），无法用 try/catch 兜住，只能由外部把进程重新拉起来。启动器因此增加了自动重启：
+
+### 判定流程
+
+进程退出后，启动器按以下顺序判断：
+
+1. **任务是否已完成** —— 日志里出现 `completion_keywords`（默认 `一条龙和配置组任务结束`、`主窗体退出`）即视为完成，不重启；
+2. **是否崩溃** —— 日志（终端输出或日志文件）出现 `crash_keywords`（默认含 `Fatal error`、`AccessViolationException`、`Attempted to read or write protected memory` 等），或退出码非 0；
+3. **安全检查**（任一不满足即不重启）：
+   - 本次退出不是启动器自己 `taskkill` 的（更新日规则）；
+   - 游戏进程仍在运行（`require_game_running`）—— 游戏都退了说明是正常收尾或用户手动关闭，重启只会把游戏又拉起来；
+   - 未超过 `max_restarts` 次数；
+   - 本次运行未超过 `monitor.max_duration_hours`。
+
+### 重启动作
+
+满足条件时：
+
+```
+[WARNING] BetterGI 异常退出且任务未完成 → 20 秒后进行第 1/3 次重启（BetterGI 崩溃退出（日志出现 Fatal error 等致命错误）且任务未完成）
+[INFO] 重启前再次检查进程状态…
+[INFO] 第 1/3 次重启已拉起 BetterGI，PID: 22936
+```
+
+- 等待 `restart.delay_seconds` 秒，期间每秒检查一次游戏是否还在；游戏中途退出则放弃重启；
+- 重新执行 `BetterGI.exe startOneDragon <同一配置名>`，并重新记录日志基线；
+- 合并日志**继续写同一个文件**，用 `####` 标记分隔每次重启，便于事后还原全过程。
+
+### 不重启的情况
+
+| 情况                          | 说明                                     |
+| --------------------------- | -------------------------------------- |
+| 一条龙任务已完成                    | 命中 `一条龙和配置组任务结束` / `主窗体退出`            |
+| 游戏进程已退出                     | 正常收尾或用户主动关闭，不把游戏重新拉起                   |
+| 退出码 0 且无崩溃特征                | 视为正常关闭；如需强制重启，把 `restart_on_clean_exit` 设为 `true` |
+| 更新日规则主动 taskkill            | 由启动器自己终止，不重启                           |
+| 已达 `max_restarts` 或超过最大运行时长 | 防止崩溃循环无限重启                             |
+
+关闭该功能：
+
+```json
+"restart": { "enabled": false }
+```
+
+---
+
 ## 启动前进程检查
 
 *（v0.1.1 新增）*
@@ -370,7 +459,7 @@ BetterGI 由命令行启动时会把运行日志打印到终端。启动器接�
    - 或更新日特殊规则到期并执行了 taskkill；
    - 或超过 `max_duration_hours` 的保护时长。
 
-结束后会在合并日志写入收尾标记与子进程退出码，然后自身退出。
+结束后会在合并日志写入收尾标记与子进程退出码；若判定为“崩溃且任务未完成”，则进入 [崩溃自动重启](#崩溃自动重启) 流程（v0.1.4）。
 
 > 只想“启动完就退出”，设置 `"monitor": { "enabled": false }`。
 
@@ -593,9 +682,35 @@ BetterGI 的终端输出未被采集到，且文件兜底尚未触发。先跑 `
 
 检查 `update_day_kill_after_dm` 是否为 `true`，以及当天是否为版本更新日（基准 2026-08-12，周期 42 天）。
 
+### Q14：BetterGI 崩溃了，为什么没有自动重启？
+
+按顺序排查：
+
+1. 日志里是否有 `不自动重启：…` 说明（启动器会明确写出原因）；
+2. 任务是否已经完成（出现 `一条龙和配置组任务结束` / `主窗体退出`）；
+3. 游戏进程是否已经退出 —— 默认 `restart.require_game_running = true`，游戏没了就不重启；
+4. 是否达到 `restart.max_restarts`（默认 3 次）；
+5. `restart.enabled` 是否为 `true`。
+
+### Q15：会不会无限重启？
+
+不会。单次运行最多重启 `restart.max_restarts` 次（默认 3），且总时长受 `monitor.max_duration_hours`（默认 12 小时）约束；每次重启都会在日志里写明是第几次。
+
+### Q16：崩溃重启后，一条龙会从头再跑一遍吗？
+
+会。重启等价于重新执行 `BetterGI.exe startOneDragon <配置名>`，已完成的子任务由 BetterGI 自己的配置决定是否跳过，启动器不做干预。
+
 ---
 
 ## 更新日志
+
+### v0.1.4
+
+- **新增：崩溃自动重启**。BetterGI 异常退出（`Fatal error` / `AccessViolationException` / 非零退出码）且一条龙任务未完成时，等待 `restart.delay_seconds` 秒后自动重新执行 `startOneDragon <配置名>`，继续写入同一份合并日志。
+  - 任务完成（命中 `一条龙和配置组任务结束` / `主窗体退出`）、游戏已退出、更新日主动 taskkill、达到重启次数上限时均不重启。
+  - 等待期间每秒检查游戏是否仍在运行，游戏中途退出则放弃重启。
+- **配置**：新增 `restart` 段（默认启用，最多 3 次，间隔 20 秒）。
+- **日志**：每次监听结束会输出“任务完成 / 崩溃特征 / 主动终止”三项判定结果；合并日志用 `####` 标记记录每次重启。
 
 ### v0.1.3
 
@@ -647,10 +762,10 @@ BetterGI 的终端输出未被采集到，且文件兜底尚未触发。先跑 `
 - **UAC 检测**：`is_admin()`、`request_admin()`。
 - **配置管理**：`load_config()`、`save_config()`、`select_bgi_path_interactive()`。
 - **日期计算**：`get_version_info()`、`get_version_start_date()`、`get_burst_window()`、`is_burst_period()`、`is_update_day()`、`is_maintenance_time()`、`log_version_context()`。
-- **进程管理**：`get_process_pids()`、`is_process_running()`、`kill_processes()`、`pre_launch_process_check()`。
+- **进程管理**：`get_process_pids()`、`is_process_running()`、`kill_processes()`、`pre_launch_process_check()`、`is_game_running()`。
 - **窗口处理**：`find_game_window()`、`bring_window_to_foreground()`。
 - **焦点守护**：`FocusGuard`（热键轮询、触发匹配、切前台）。
-- **启动**：`launch_bettergi()`。
+- **启动与重启**：`launch_bettergi()`、`MonitorOutcome`、`evaluate_restart()`、`wait_before_restart()`。
 - **日志采集**：`decode_output()`、`capture_bgi_log_baseline()`、`MergedLogWriter`、`BgiStdoutReader`、`BgiLogFollower`、`monitor_bettergi()`。
 - **测试模式**：`test_bgi()`、`test_taskkill()`、`test_process()`、`test_time()`。
 - **主流程**：`main()`。

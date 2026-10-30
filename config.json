@@ -30,6 +30,25 @@
     "retry_interval_seconds": 5,
     "cancel_key": "F12"
   },
+  "restart": {
+    "enabled": true,
+    "max_restarts": 3,
+    "delay_seconds": 20,
+    "require_game_running": true,
+    "restart_on_clean_exit": false,
+    "crash_keywords": [
+      "Fatal error",
+      "Unhandled exception",
+      "AccessViolationException",
+      "Attempted to read or write protected memory",
+      "StackOverflowException",
+      "OutOfMemoryException"
+    ],
+    "completion_keywords": [
+      "一条龙和配置组任务结束",
+      "主窗体退出"
+    ]
+  },
   "special_rules": {
     "burst_first_day_as_normal": true,
     "update_day_kill_after_dm": true,

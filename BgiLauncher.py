@@ -4,7 +4,12 @@
 BetterGI 智能启动器
 根据实际启动时刻自动匹配启动参数，支持紊乱爆发期与版本更新特殊处理。
 
-v0.1.3（新增）：
+v0.1.4（新增）：
+  崩溃自动重启：BetterGI 异常退出（.NET Fatal error / AccessViolationException 等致命错误，
+  或非零退出码）且一条龙任务尚未完成时，按配置自动重启 BetterGI 并继续监听；
+  任务已完成、用户关闭游戏、启动器主动终止等情况下不重启，重启次数与间隔可配置。
+
+v0.1.3：
   1. 终端回显：由命令行启动本程序时，BetterGI 的运行日志会一并输出到当前终端
      （打包为窗口程序时通过 AttachConsole 附着到父控制台；无控制台时仅写日志文件）。
   2. 焦点守护：BetterGI 日志出现“不是原神 …… 暂停”时，自动把原神窗口切到前台；
@@ -26,6 +31,7 @@ v0.1.2：
   BgiLauncher.py testtime   测试版本 / 紊乱爆发期时间判定
 """
 
+import collections
 import csv
 import ctypes
 import io
@@ -45,7 +51,7 @@ from pathlib import Path
 # 常量定义
 # ============================================================
 APP_NAME = "BetterGI 智能启动器"
-VERSION = "0.1.3"
+VERSION = "0.1.4"
 BASE_DIR = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
 CONFIG_FILE = BASE_DIR / "config.json"
 LOG_DIR = BASE_DIR / "log"
@@ -349,6 +355,25 @@ DEFAULT_CONFIG = {
         "retry_times": 6,
         "retry_interval_seconds": 5,
         "cancel_key": "F12"
+    },
+    "restart": {
+        "enabled": True,
+        "max_restarts": 3,
+        "delay_seconds": 20,
+        "require_game_running": True,
+        "restart_on_clean_exit": False,
+        "crash_keywords": [
+            "Fatal error",
+            "Unhandled exception",
+            "AccessViolationException",
+            "Attempted to read or write protected memory",
+            "StackOverflowException",
+            "OutOfMemoryException"
+        ],
+        "completion_keywords": [
+            "一条龙和配置组任务结束",
+            "主窗体退出"
+        ]
     },
     "special_rules": {
         "burst_first_day_as_normal": True,
@@ -661,6 +686,33 @@ def pre_launch_process_check(config: dict):
         logger.error(f"{bgi_proc} 仍存在残留进程（PID: {', '.join(map(str, remain))}），继续尝试启动")
     else:
         logger.info(f"{bgi_proc} 已全部终止，继续执行启动流程")
+
+
+def is_game_running(config: dict) -> bool:
+    """判断原神进程是否在运行（兼容国服 YuanShen.exe / 国际服 GenshinImpact.exe）"""
+    game_proc = config.get("pre_launch_check", {}).get("game_process", "Yuanshen.exe")
+    for name in {game_proc, "YuanShen.exe", "GenshinImpact.exe"}:
+        if is_process_running(name):
+            return True
+    return False
+
+
+def wait_before_restart(config: dict, seconds: float, rcfg: dict):
+    """
+    重启前的等待（v0.1.4）。
+
+    等待期间若游戏被关闭，则放弃重启 —— 否则会把用户主动退出的游戏又拉起来。
+    返回: (是否继续重启, 放弃原因)
+    """
+    require_game = bool((rcfg or {}).get("require_game_running", True))
+    deadline = time.monotonic() + max(0.0, seconds)
+    while time.monotonic() < deadline:
+        if require_game and not is_game_running(config):
+            return False, "等待期间游戏已退出（判定为用户主动收尾）"
+        time.sleep(min(1.0, max(0.05, deadline - time.monotonic())))
+    if require_game and not is_game_running(config):
+        return False, "重启前游戏已退出（判定为用户主动收尾）"
+    return True, ""
 
 
 # ============================================================
@@ -1078,6 +1130,11 @@ class MergedLogWriter:
         if callback is not None:
             self._listeners.append(callback)
 
+    def remove_listener(self, callback):
+        """注销回调（重启监听时避免重复注册）"""
+        if callback in self._listeners:
+            self._listeners.remove(callback)
+
     def write(self, text: str, echo: bool = False, notify: bool = True):
         line = text.rstrip("\r\n")
         if self._fh is not None:
@@ -1253,13 +1310,40 @@ class BgiLogFollower:
             self._handle = None
 
 
+class MonitorOutcome:
+    """一次监听的结果，供重启判定使用"""
+
+    def __init__(self, reason, exit_code, completed, crash, killed, elapsed, lines):
+        self.reason = reason
+        self.exit_code = exit_code
+        self.completed = completed
+        self.crash = crash
+        self.killed = killed
+        self.elapsed = elapsed
+        self.lines = lines
+
+    def __str__(self):
+        parts = [self.reason, f"退出码 {self.exit_code}"]
+        if self.completed:
+            parts.append("任务已完成")
+        if self.crash:
+            parts.append("检测到崩溃特征")
+        if self.killed:
+            parts.append("启动器主动终止")
+        return "，".join(parts)
+
+
 def monitor_bettergi(config: dict, bgi_path: str, proc, writer: MergedLogWriter,
                      baseline=None, pending_kill=None):
     """
     持续监听 BetterGI：采集终端输出（主）+ 日志文件（兜底），
     直到 BetterGI 进程被关闭（或触发更新日终止、或超过最大监听时长）。
+
+    同时顺带判断本次退出是“任务已完成”还是“异常/崩溃退出”，
+    返回 MonitorOutcome 供上层决定是否重启（v0.1.4）。
     """
     mon = config.get("monitor", {})
+    rcfg = config.get("restart", {}) or {}
     bgi_proc = config.get("pre_launch_check", {}).get("bgi_process", "BetterGI.exe")
     interval = max(0.2, float(mon.get("poll_interval_seconds", 2) or 2))
     startup_timeout = float(mon.get("startup_timeout_seconds", 120) or 0)
@@ -1268,6 +1352,23 @@ def monitor_bettergi(config: dict, bgi_path: str, proc, writer: MergedLogWriter,
     follow_file = bool(mon.get("follow_log_file", False))
     file_fallback = bool(mon.get("follow_log_file_fallback", True))
     stdout_grace = float(mon.get("stdout_grace_seconds", 20) or 0)
+
+    crash_keywords = [str(k) for k in (rcfg.get("crash_keywords") or []) if str(k).strip()]
+    completion_keywords = [str(k) for k in (rcfg.get("completion_keywords") or []) if str(k).strip()]
+
+    # 最近若干行日志，用于判断崩溃 / 完成
+    recent_lines = collections.deque(maxlen=600)
+    state = {"completed": False, "crash": False}
+
+    def _record(line: str):
+        recent_lines.append(line)
+        if not state["completed"] and any(k in line for k in completion_keywords):
+            state["completed"] = True
+        if not state["crash"] and any(k.lower() in line.lower() for k in crash_keywords):
+            state["crash"] = True
+            logger.warning(f"BetterGI 日志出现崩溃特征: {line[:160]}")
+
+    writer.add_listener(_record)
 
     reader = None
     if capture_stdout and proc is not None and proc.stdout is not None:
@@ -1355,7 +1456,7 @@ def monitor_bettergi(config: dict, bgi_path: str, proc, writer: MergedLogWriter,
 
             time.sleep(interval)
     finally:
-        # 收尾：再抓一次日志，等待采集线程退出
+        # 收尾：再抓一次日志，等待采集线程退出（要把崩溃前最后几行收完）
         if follower:
             try:
                 follower.poll()
@@ -1365,15 +1466,74 @@ def monitor_bettergi(config: dict, bgi_path: str, proc, writer: MergedLogWriter,
             reader.join(timeout=5)
         if follower:
             follower.close()
+        writer.remove_listener(_record)
 
     # proc 退出码（若子进程已结束）
     exit_code = proc.poll() if proc is not None else None
+    elapsed = time.monotonic() - start
+
+    # 崩溃特征也可能只出现在日志文件里，这里再兜一遍
+    for line in reversed(recent_lines):
+        if any(k.lower() in line.lower() for k in crash_keywords):
+            state["crash"] = True
+            break
+
     writer.comment(f"监听结束：{reason}；合并日志行数 {writer.lines}")
     logger.info(
         f"监听结束 -> {reason}，合并日志行数 {writer.lines}"
         + (f"，子进程退出码 {exit_code}" if exit_code is not None else "")
     )
-    return reason, exit_code
+    logger.info(
+        f"本次退出判定：任务完成={state['completed']}，"
+        f"崩溃特征={state['crash']}，主动终止={killed}"
+    )
+    return MonitorOutcome(reason, exit_code, state["completed"], state["crash"],
+                          killed, elapsed, writer.lines)
+
+
+def evaluate_restart(config: dict, outcome: MonitorOutcome, attempt: int,
+                     session_start: float):
+    """
+    判断是否需要重启 BetterGI（v0.1.4）。
+
+    返回: (是否重启, 原因说明)
+    """
+    rcfg = config.get("restart", {}) or {}
+    if not rcfg.get("enabled", True):
+        return False, "自动重启已禁用（restart.enabled = false）"
+
+    if outcome.killed:
+        return False, "本次退出由启动器主动终止（更新日规则），不重启"
+
+    if outcome.completed:
+        return False, "一条龙任务已完成（命中完成标记），不重启"
+
+    if "未检测到" in outcome.reason:
+        return False, "BetterGI 未能成功启动，不自动重启"
+
+    max_restarts = max(0, int(rcfg.get("max_restarts", 3) or 0))
+    if attempt >= max_restarts:
+        return False, f"已达最大重启次数 {max_restarts}"
+
+    max_hours = float(config.get("monitor", {}).get("max_duration_hours", 12) or 0)
+    if max_hours > 0 and (time.monotonic() - session_start) > max_hours * 3600:
+        return False, f"本次运行已超过最大时长 {max_hours:g} 小时，不再重启"
+
+    # 游戏已经退出：多半是正常收尾或用户主动关闭，重启会把游戏又拉起来
+    if rcfg.get("require_game_running", True):
+        game_proc = config.get("pre_launch_check", {}).get("game_process", "Yuanshen.exe")
+        if not is_process_running(game_proc):
+            return False, f"游戏进程 {game_proc} 已退出，判定为收尾 / 手动关闭，不重启"
+
+    clean_exit = outcome.exit_code in (0, None) and not outcome.crash
+    if clean_exit and not rcfg.get("restart_on_clean_exit", False):
+        return False, f"BetterGI 正常退出（退出码 {outcome.exit_code}，无崩溃特征），不重启"
+
+    if outcome.crash:
+        return True, "BetterGI 崩溃退出（日志出现 Fatal error 等致命错误）且任务未完成"
+    if clean_exit:
+        return True, "已开启 restart_on_clean_exit，BetterGI 正常退出也按任务未完成重启"
+    return True, f"BetterGI 异常退出（退出码 {outcome.exit_code}）且任务未完成"
 
 
 # ============================================================
@@ -1618,14 +1778,7 @@ def main():
 
     logger.info(f"使用配置名称: {config_name}（版本 {ver_str}，判定时刻 {now_dt:%H:%M:%S}）")
 
-    # --- 启动 BetterGI ---
-    success, proc = launch_bettergi(config, config_name)
-
-    if not success:
-        logger.error("启动 BetterGI 失败，程序退出")
-        sys.exit(1)
-
-    # --- 更新日特殊处理：计划延迟终止 ---
+    # --- 更新日特殊处理（启动前先算好延迟终止计划）---
     special = config.get("special_rules", {})
     pending_kill = None
     if update_day and special.get("update_day_kill_after_dm", True):
@@ -1641,45 +1794,109 @@ def main():
     else:
         logger.info("无更新日特殊处理")
 
-    # --- 持续监听 BetterGI 日志，直至进程关闭（v0.1.1）---
+    # --- 持续监听 BetterGI 日志，直至进程关闭（v0.1.1）；异常退出时自动重启（v0.1.4）---
     mon = config.get("monitor", {})
-    if mon.get("enabled", True):
-        merged_path = SESSION_LOG_DIR / f"bettergi-merge-{SESSION_TS}.log"
-        writer = MergedLogWriter(merged_path)
-
-        # --- 焦点守护（v0.1.3）---
-        check_cfg = config.get("pre_launch_check", {})
-        game_proc = check_cfg.get("game_process", "Yuanshen.exe")
-        guard = FocusGuard(config, game_proc, writer)
-        writer.add_listener(guard.feed)
-        guard.start()
-
-        try:
-            writer.write("# BetterGI 运行日志合并文件", notify=False)
-            writer.write(f"# 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", notify=False)
-            writer.write(f"# 启动器版本: v{VERSION}", notify=False)
-            writer.write(f"# BetterGI: {bgi_path}", notify=False)
-            writer.write(f"# 一条龙配置: {config_name}（{reason}）", notify=False)
-            writer.write(f"# 判定时刻: {now_dt:%Y-%m-%d %H:%M:%S}（版本 {ver_str}）", notify=False)
-            writer.write("# " + "=" * 58, notify=False)
-
-            monitor_bettergi(config, bgi_path, proc, writer,
-                             baseline=baseline, pending_kill=pending_kill)
-        finally:
-            guard.stop()
-            if guard.config_enabled:
-                writer.comment(
-                    f"焦点守护统计：触发 {guard.trigger_count} 次，"
-                    f"成功切前台 {guard.focus_count} 次"
-                )
-                logger.info(
-                    f"焦点守护统计：触发 {guard.trigger_count} 次，"
-                    f"成功切前台 {guard.focus_count} 次"
-                )
-            writer.close()
-    else:
+    if not mon.get("enabled", True):
+        success, _proc = launch_bettergi(config, config_name)
+        if not success:
+            logger.error("启动 BetterGI 失败，程序退出")
+            sys.exit(1)
         logger.info("监听功能已禁用（monitor.enabled = false），启动完成后直接退出")
+        logger.info("程序执行完毕")
+        return
 
+    merged_path = SESSION_LOG_DIR / f"bettergi-merge-{SESSION_TS}.log"
+    writer = MergedLogWriter(merged_path)
+
+    # --- 焦点守护（v0.1.3）---
+    check_cfg = config.get("pre_launch_check", {})
+    game_proc = check_cfg.get("game_process", "Yuanshen.exe")
+    guard = FocusGuard(config, game_proc, writer)
+    writer.add_listener(guard.feed)
+    guard.start()
+
+    rcfg = config.get("restart", {}) or {}
+    max_restarts = max(0, int(rcfg.get("max_restarts", 3) or 0))
+    restart_delay = max(0.0, float(rcfg.get("delay_seconds", 20) or 0))
+
+    session_start = time.monotonic()
+    attempt = 0
+    last_outcome = None
+
+    try:
+        writer.write("# BetterGI 运行日志合并文件", notify=False)
+        writer.write(f"# 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", notify=False)
+        writer.write(f"# 启动器版本: v{VERSION}", notify=False)
+        writer.write(f"# BetterGI: {bgi_path}", notify=False)
+        writer.write(f"# 一条龙配置: {config_name}（{reason}）", notify=False)
+        writer.write(f"# 判定时刻: {now_dt:%Y-%m-%d %H:%M:%S}（版本 {ver_str}）", notify=False)
+        writer.write(
+            f"# 崩溃自动重启: {'启用' if rcfg.get('enabled', True) else '禁用'}"
+            f"（最多 {max_restarts} 次，间隔 {restart_delay:g} 秒）",
+            notify=False
+        )
+        writer.write("# " + "=" * 58, notify=False)
+
+        while True:
+            success, proc = launch_bettergi(config, config_name)
+            if not success:
+                logger.error("启动 BetterGI 失败，程序退出")
+                if attempt == 0:
+                    sys.exit(1)
+                break
+
+            if attempt > 0:
+                logger.info(f"第 {attempt}/{max_restarts} 次重启已拉起 BetterGI，PID: {proc.pid}")
+                writer.comment(f"第 {attempt}/{max_restarts} 次重启，PID: {proc.pid}")
+
+            outcome = monitor_bettergi(config, bgi_path, proc, writer,
+                                       baseline=baseline, pending_kill=pending_kill)
+            last_outcome = outcome
+            # 更新日终止是一次性规则，重启后不再重复计时
+            pending_kill = None
+
+            need_restart, why = evaluate_restart(config, outcome, attempt, session_start)
+            if not need_restart:
+                logger.info(f"不自动重启：{why}")
+                writer.comment(f"不自动重启：{why}")
+                break
+
+            attempt += 1
+            logger.warning(
+                f"BetterGI 异常退出且任务未完成 → {restart_delay:g} 秒后进行第 "
+                f"{attempt}/{max_restarts} 次重启（{why}）"
+            )
+            writer.comment(
+                f"第 {attempt}/{max_restarts} 次重启准备：{why}；等待 {restart_delay:g} 秒"
+            )
+
+            ok, abort_why = wait_before_restart(config, restart_delay, rcfg)
+            if not ok:
+                logger.info(f"放弃重启：{abort_why}")
+                writer.comment(f"放弃重启：{abort_why}")
+                break
+
+            logger.info("重启前再次检查进程状态…")
+            pre_launch_process_check(config)
+            baseline = capture_bgi_log_baseline(bgi_path)
+    finally:
+        guard.stop()
+        if guard.config_enabled:
+            writer.comment(
+                f"焦点守护统计：触发 {guard.trigger_count} 次，"
+                f"成功切前台 {guard.focus_count} 次"
+            )
+            logger.info(
+                f"焦点守护统计：触发 {guard.trigger_count} 次，"
+                f"成功切前台 {guard.focus_count} 次"
+            )
+        if attempt:
+            writer.comment(f"本次运行共重启 {attempt} 次")
+            logger.info(f"本次运行共重启 {attempt} 次")
+        writer.close()
+
+    if last_outcome is not None:
+        logger.info(f"最后一次监听结果：{last_outcome}")
     logger.info("程序执行完毕")
 
 
